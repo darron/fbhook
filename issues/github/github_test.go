@@ -8,6 +8,7 @@ import (
 	"github.com/darron/fbhook/service"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,5 +110,81 @@ func TestDroppedLabelsPreserveReferenceAndFailVerification(t *testing.T) {
 	}
 	if _, err = p.Find(t.Context(), d, "token", issue, "42"); err == nil {
 		t.Fatal("reconciliation ignored missing captured labels")
+	}
+}
+
+func TestSecondaryRateLimitWithoutRetryHeader(t *testing.T) {
+	for _, message := range []string{"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.", "Resource not accessible by personal access token"} {
+		t.Run(message, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("X-RateLimit-Remaining", "4000")
+				w.WriteHeader(http.StatusForbidden)
+				_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
+			}))
+			defer srv.Close()
+			_, err := New(srv.Client(), srv.URL).Create(t.Context(), service.Destination{Target: "o/r"}, "test", service.Issue{})
+			var pe *service.ProviderError
+			if !errors.As(err, &pe) {
+				t.Fatalf("unclassified response: %v", err)
+			}
+			wantRetry := strings.Contains(message, "secondary rate limit")
+			if pe.Retryable != wantRetry || pe.Uncertain || wantRetry && pe.RetryAfter < time.Minute {
+				t.Fatalf("incorrect retry classification: %+v", pe)
+			}
+			if strings.Contains(err.Error(), message) {
+				t.Fatal("upstream response leaked")
+			}
+		})
+	}
+}
+
+func TestFindPropagatesCandidateOperationalErrors(t *testing.T) {
+	for _, code := range []int{429, 403, 502} {
+		t.Run(fmt.Sprint(code), func(t *testing.T) {
+			verifications := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/search/issues" {
+					_, _ = fmt.Fprint(w, `{"items":[{"number":42},{"number":43}]}`)
+					return
+				}
+				verifications++
+				if code == 429 {
+					w.Header().Set("Retry-After", "3600")
+				}
+				w.WriteHeader(code)
+			}))
+			defer srv.Close()
+			_, err := New(srv.Client(), srv.URL).Find(t.Context(), service.Destination{Target: "o/r"}, "test", service.Issue{ID: "abc"}, "")
+			var pe *service.ProviderError
+			if !errors.As(err, &pe) || verifications != 1 {
+				t.Fatalf("operational failure swallowed: %v requests=%d", err, verifications)
+			}
+			if code == 429 && (!pe.Retryable || pe.RetryAfter != time.Hour) {
+				t.Fatalf("throttle hint lost: %+v", pe)
+			}
+		})
+	}
+}
+
+func TestFindSkipsMissingAndMismatchedCandidates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/search/issues":
+			_, _ = fmt.Fprint(w, `{"items":[{"number":40},{"number":41},{"number":42}]}`)
+		case "/repos/o/r/issues/40":
+			w.WriteHeader(404)
+		case "/repos/o/r/issues/41":
+			_, _ = fmt.Fprint(w, `{"number":41,"html_url":"https://github.com/o/r/issues/41","body":"wrong marker"}`)
+		case "/repos/o/r/issues/42":
+			_, _ = fmt.Fprint(w, `{"number":42,"html_url":"https://github.com/o/r/issues/42","body":"<!-- fbhook:abc -->"}`)
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	defer srv.Close()
+	ref, err := New(srv.Client(), srv.URL).Find(t.Context(), service.Destination{Target: "o/r"}, "test", service.Issue{ID: "abc"}, "")
+	if err != nil || ref.ID != "42" {
+		t.Fatalf("valid candidate not found: %+v %v", ref, err)
 	}
 }

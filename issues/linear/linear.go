@@ -120,16 +120,30 @@ func (p *Provider) Create(ctx context.Context, d service.Destination, token stri
 	return service.IssueRef{ID: out.IssueCreate.Issue.ID, URL: out.IssueCreate.Issue.URL}, nil
 }
 
+var errIssueMismatch = errors.New("issue target, labels or marker mismatch")
+
+type labelPage struct {
+	Nodes    []struct{ ID string }
+	PageInfo struct {
+		HasNextPage bool
+		EndCursor   string
+	}
+}
+
 type foundIssue struct {
 	ID, URL, Description string
 	Team                 struct{ ID string }
 	Project              *struct{ ID string }
+	Labels               labelPage
 }
 
 func (p *Provider) Find(ctx context.Context, d service.Destination, token string, issue service.Issue, reference string) (service.IssueRef, error) {
 	verify := func(out foundIssue) (service.IssueRef, error) {
 		if out.ID == "" || out.URL == "" || out.Team.ID != d.Target || (d.Project != "" && (out.Project == nil || out.Project.ID != d.Project)) || !strings.HasSuffix(strings.TrimSpace(out.Description), "<!-- fbhook:"+issue.ID+" -->") {
-			return service.IssueRef{}, errors.New("issue target or marker mismatch")
+			return service.IssueRef{}, errIssueMismatch
+		}
+		if e := p.verifyLabels(ctx, d, token, out); e != nil {
+			return service.IssueRef{}, e
 		}
 		return service.IssueRef{ID: out.ID, URL: out.URL}, nil
 	}
@@ -138,7 +152,7 @@ func (p *Provider) Find(ctx context.Context, d service.Destination, token string
 			return service.IssueRef{}, errors.New("invalid issue ID")
 		}
 		var out struct{ Issue *foundIssue }
-		if e := p.query(ctx, token, `query($id:String!){issue(id:$id){id url description team{id} project{id}}}`, map[string]any{"id": reference}, &out, false); e != nil {
+		if e := p.query(ctx, token, `query($id:String!){issue(id:$id){id url description team{id} project{id} labels(first:50){nodes{id} pageInfo{hasNextPage endCursor}}}}`, map[string]any{"id": reference}, &out, false); e != nil {
 			return service.IssueRef{}, e
 		}
 		if out.Issue == nil {
@@ -147,14 +161,58 @@ func (p *Provider) Find(ctx context.Context, d service.Destination, token string
 		return verify(*out.Issue)
 	}
 	var out struct{ Issues struct{ Nodes []foundIssue } }
-	e := p.query(ctx, token, `query($team:ID!,$marker:String!){issues(first:50,filter:{team:{id:{eq:$team}},description:{contains:$marker}}){nodes{id url description team{id} project{id}}}}`, map[string]any{"team": d.Target, "marker": "fbhook:" + issue.ID}, &out, false)
+	e := p.query(ctx, token, `query($team:ID!,$marker:String!){issues(first:50,filter:{team:{id:{eq:$team}},description:{contains:$marker}}){nodes{id url description team{id} project{id} labels(first:50){nodes{id} pageInfo{hasNextPage endCursor}}}}}`, map[string]any{"team": d.Target, "marker": "fbhook:" + issue.ID}, &out, false)
 	if e != nil {
 		return service.IssueRef{}, e
 	}
 	for _, candidate := range out.Issues.Nodes {
-		if ref, e := verify(candidate); e == nil {
+		ref, e := verify(candidate)
+		if e == nil {
 			return ref, nil
+		}
+		if !errors.Is(e, errIssueMismatch) {
+			return service.IssueRef{}, e
 		}
 	}
 	return service.IssueRef{}, errors.New("existing issue not confirmed")
+}
+
+// Label connections are paginated independently of issue search results. Stop
+// once all captured defaults are confirmed; otherwise exhaust the connection.
+func (p *Provider) verifyLabels(ctx context.Context, d service.Destination, token string, issue foundIssue) error {
+	missing := make(map[string]bool, len(d.Labels))
+	for _, id := range d.Labels {
+		missing[id] = true
+	}
+	page := issue.Labels
+	seen := map[string]bool{}
+	for {
+		for _, label := range page.Nodes {
+			delete(missing, label.ID)
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		if !page.PageInfo.HasNextPage {
+			return errIssueMismatch
+		}
+		cursor := page.PageInfo.EndCursor
+		if cursor == "" || seen[cursor] {
+			return errors.New("label pagination did not advance")
+		}
+		seen[cursor] = true
+		var out struct {
+			Issue *struct {
+				ID     string
+				Labels labelPage
+			}
+		}
+		if e := p.query(ctx, token, `query($id:String!,$after:String!){issue(id:$id){id labels(first:50,after:$after){nodes{id} pageInfo{hasNextPage endCursor}}}}`, map[string]any{"id": issue.ID, "after": cursor}, &out, false); e != nil {
+			return e
+		}
+		if out.Issue == nil || out.Issue.ID != issue.ID {
+			return errors.New("invalid issue label response")
+		}
+		page = out.Issue.Labels
+	}
 }

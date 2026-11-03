@@ -114,6 +114,7 @@ type Submission struct {
 	Destination       Destination     `json:"destination"`
 	Issue             Issue           `json:"issue"`
 	State             string          `json:"state"`
+	CreationUncertain bool            `json:"creation_uncertain,omitempty"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 	NextAttempt       time.Time       `json:"next_attempt,omitempty"`
@@ -239,6 +240,12 @@ func (s *Service) event(sub *Submission, state, actor, reason string) {
 		sub.History = sub.History[len(sub.History)-20:]
 	}
 	sub.TotalEvents++
+	switch state {
+	case "delivery_uncertain":
+		sub.CreationUncertain = true
+	case "delivered":
+		sub.CreationUncertain = false
+	}
 	sub.State = state
 	sub.UpdatedAt = now
 }

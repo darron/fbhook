@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/darron/fbhook/storage"
@@ -589,6 +590,103 @@ func TestUncertainReconciliationBacksOffWhenDependenciesUnavailable(t *testing.T
 			sub, _, _ = s.GetSubmission(t.Context(), ep, receipt.ID)
 			if sub.State != "delivered" || p.finds != 1 || p.calls != 1 {
 				t.Fatalf("recovery duplicated creation or lost delivery: state=%s finds=%d creates=%d", sub.State, p.finds, p.calls)
+			}
+		})
+	}
+}
+
+func TestAbandonedUncertainRetryStillRequiresAcknowledgement(t *testing.T) {
+	store := memory.New()
+	s, p, ep, credential := setup(t, store)
+	p.fail = &ProviderError{Kind: "transport", Uncertain: true}
+	receipt, err := s.Accept(t.Context(), credential, []byte(`{"feedback":"uncertain"}`), "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Scan(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Resolve(t.Context(), ep, receipt.ID, Resolution{Action: "abandon", Actor: "123", Reason: "stop delivery"}); err != nil {
+		t.Fatal(err)
+	}
+	// Repeated abandonment and history truncation must not erase provenance.
+	for i := 0; i < 25; i++ {
+		if err = s.Resolve(t.Context(), ep, receipt.ID, Resolution{Action: "abandon", Actor: "123", Reason: "still stopped"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restarted, err := New(store, s.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = restarted.Resolve(t.Context(), ep, receipt.ID, Resolution{Action: "retry", Actor: "123", Reason: "try again"})
+	if err == nil || ErrorStatus(err) != 400 {
+		t.Fatalf("uncertain retry bypassed acknowledgement: %v", err)
+	}
+	if err = restarted.Scan(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("abandoned work recreated: %d", p.calls)
+	}
+	if err = restarted.Resolve(t.Context(), ep, receipt.ID, Resolution{Action: "retry", Actor: "123", Reason: "accept duplication risk", AcknowledgeDuplicate: true}); err != nil {
+		t.Fatal(err)
+	}
+	p.fail = nil
+	if err = restarted.Scan(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	sub, _, err := restarted.GetSubmission(t.Context(), ep, receipt.ID)
+	if err != nil || sub.State != "delivered" || p.calls != 2 {
+		t.Fatalf("acknowledged retry failed: state=%s calls=%d err=%v", sub.State, p.calls, err)
+	}
+}
+
+func TestAbandonedUncertainSubmissionCanStillBeLinked(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprint("legacy=", legacy), func(t *testing.T) {
+			store := memory.New()
+			s, _, ep, credential := setup(t, store)
+			p := &reconcileProvider{fixtureProvider: fixtureProvider{fail: &ProviderError{Kind: "transport", Uncertain: true}}, confirmed: true}
+			s.options.Providers["github"] = p
+			receipt, err := s.Accept(t.Context(), credential, []byte(`{"feedback":"uncertain"}`), "one")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Resolve(t.Context(), ep, receipt.ID, Resolution{Action: "abandon", Actor: "123", Reason: "stop delivery"}); err != nil {
+				t.Fatal(err)
+			}
+			if legacy {
+				key := submissionKey(ep, receipt.ID)
+				object, err := store.Get(t.Context(), key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var fields map[string]any
+				if err = json.Unmarshal(object.Body, &fields); err != nil {
+					t.Fatal(err)
+				}
+				delete(fields, "creation_uncertain")
+				body, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = store.Replace(t.Context(), key, body, object.Version); err != nil {
+					t.Fatal(err)
+				}
+				if err = s.Resolve(t.Context(), ep, receipt.ID, Resolution{Action: "retry", Actor: "123", Reason: "try again"}); err == nil {
+					t.Fatal("legacy abandoned uncertainty bypassed acknowledgement")
+				}
+			}
+			if err = s.Resolve(t.Context(), ep, receipt.ID, Resolution{Action: "link", Actor: "123", Reason: "found existing issue", Reference: "42"}); err != nil {
+				t.Fatal(err)
+			}
+			sub, _, err := s.GetSubmission(t.Context(), ep, receipt.ID)
+			if err != nil || sub.State != "delivered" || p.calls != 1 {
+				t.Fatalf("link did not resolve without creating: state=%s calls=%d err=%v", sub.State, p.calls, err)
 			}
 		})
 	}

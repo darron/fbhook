@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -50,11 +51,23 @@ func Call(ctx context.Context, client *http.Client, method, url, auth string, pa
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		pe := &service.ProviderError{Kind: "request_rejected", Uncertain: creation && (res.StatusCode >= 500 || res.StatusCode == 408)}
-		if res.StatusCode == 429 || (res.StatusCode == 403 && (res.Header.Get("X-RateLimit-Remaining") == "0" || res.Header.Get("Retry-After") != "")) {
+		// GitHub secondary limits can omit Retry-After even while primary
+		// quota remains. Inspect only the bounded JSON discriminator; never expose it.
+		var rejection struct {
+			Message string `json:"message"`
+		}
+		secondary := res.StatusCode == 403 && json.Unmarshal(data, &rejection) == nil && strings.Contains(strings.ToLower(rejection.Message), "secondary rate limit")
+		if res.StatusCode == 404 {
+			pe.Kind = "not_found"
+		}
+		if res.StatusCode == 429 || (res.StatusCode == 403 && (res.Header.Get("X-RateLimit-Remaining") == "0" || res.Header.Get("Retry-After") != "" || secondary)) {
 			pe.Kind = "rate_limited"
 			pe.Retryable = true
 			pe.Uncertain = false
 			pe.RetryAfter = retryAfter(res.Header)
+			if secondary && res.Header.Get("Retry-After") == "" {
+				pe.RetryAfter = max(pe.RetryAfter, time.Minute)
+			}
 		}
 		if res.StatusCode == 401 || res.StatusCode == 403 && !pe.Retryable {
 			pe.Kind = "permission_denied"
