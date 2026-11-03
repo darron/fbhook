@@ -100,11 +100,14 @@ observability to redact the secret path and request bodies too.
 
 Intake allows 120 authenticated requests per endpoint and 600 globally per minute.
 Malformed or invalid credentials do not spend these quotas, and per-endpoint
-denials do not spend another endpoint's global capacity. At most 16 intake requests
-can read bodies or access storage concurrently; excess work receives `429`.
+denials do not spend another endpoint's global capacity. Authentication has a
+separate cap of 16 concurrent storage lookups and never reads a request body.
+Only authenticated, admitted requests read bodies: at most four per endpoint and
+16 globally can read bodies or persist submissions concurrently; excess work
+receives `429`. A stalled body on one credential cannot fill every intake slot.
 No forwarded client-IP headers are trusted. Put abuse controls at a trusted ingress
 if you need source-IP filtering or a per-source request budget: guessed credentials
-with a valid shape can still cause bounded concurrent storage reads.
+with a valid shape can still cause bounded concurrent authentication reads.
 
 Submission lists and page bootstrap return summaries, with application names
 limited to 200 characters. Full feedback, context and delivery history are fetched

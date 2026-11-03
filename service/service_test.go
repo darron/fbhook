@@ -548,3 +548,48 @@ func TestMissingDisabledAndUnreadableCredentialsStillFailDelivery(t *testing.T) 
 		})
 	}
 }
+
+func TestUncertainReconciliationBacksOffWhenDependenciesUnavailable(t *testing.T) {
+	for _, kind := range []string{"credential-store", "provider"} {
+		t.Run(kind, func(t *testing.T) {
+			store := &credentialReadFault{Store: memory.New()}
+			s, _, ep, credential := setup(t, store)
+			p := &reconcileProvider{fixtureProvider: fixtureProvider{fail: &ProviderError{Kind: "transport", Uncertain: true}}, confirmed: true}
+			s.options.Providers["github"] = p
+			now := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+			s.options.Clock = func() time.Time { return now }
+			receipt, err := s.Accept(t.Context(), credential, []byte(`{"feedback":"uncertain dependency"}`), "one")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "credential-store" {
+				store.failure = errors.New("temporary store outage")
+			} else {
+				delete(s.options.Providers, "github")
+			}
+			if err = s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			sub, _, err := s.GetSubmission(t.Context(), ep, receipt.ID)
+			if err != nil || sub.State != "delivery_uncertain" || !sub.NextAttempt.After(now) || p.finds != 0 {
+				t.Fatalf("unavailable dependency bypassed schedule: state=%s next=%v finds=%d err=%v", sub.State, sub.NextAttempt, p.finds, err)
+			}
+			store.failure = nil
+			s.options.Providers["github"] = p
+			if err = s.Scan(t.Context(), true); err != nil || p.finds != 0 {
+				t.Fatalf("dependency recovery bypassed backoff: finds=%d err=%v", p.finds, err)
+			}
+			now = sub.NextAttempt.Add(time.Second)
+			if err = s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			sub, _, _ = s.GetSubmission(t.Context(), ep, receipt.ID)
+			if sub.State != "delivered" || p.finds != 1 || p.calls != 1 {
+				t.Fatalf("recovery duplicated creation or lost delivery: state=%s finds=%d creates=%d", sub.State, p.finds, p.calls)
+			}
+		})
+	}
+}

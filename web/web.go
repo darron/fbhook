@@ -41,7 +41,9 @@ type Server struct {
 	window       time.Time
 	global       int
 	counts       map[string]int
-	intakeSlots  chan struct{}
+	authSlots    chan struct{}
+	active       map[string]int
+	activeTotal  int
 	readyMu      sync.Mutex
 	readyChecked time.Time
 	readyError   error
@@ -82,7 +84,7 @@ func New(s *service.Service, o Options) (*Server, error) {
 	codec := securecookie.New(o.SessionKey[:32], o.SessionKey[32:])
 	codec.MaxAge(8 * 60 * 60)
 	codec.MaxLength(4096)
-	app := &Server{service: s, options: o, allowed: allowed, codec: codec, http: &hc, secure: u.Scheme == "https", mux: http.NewServeMux(), counts: map[string]int{}, intakeSlots: make(chan struct{}, 16)}
+	app := &Server{service: s, options: o, allowed: allowed, codec: codec, http: &hc, secure: u.Scheme == "https", mux: http.NewServeMux(), counts: map[string]int{}, authSlots: make(chan struct{}, 16), active: map[string]int{}}
 	app.oauth = oauth2.Config{ClientID: o.OAuthClientID, ClientSecret: o.OAuthClientSecret, RedirectURL: strings.TrimRight(o.BaseURL, "/") + "/auth/callback", Scopes: []string{"read:user"}, Endpoint: o.OAuthEndpoint}
 	app.routes()
 	return app, nil
@@ -172,22 +174,45 @@ func (s *Server) intake(w http.ResponseWriter, r *http.Request) {
 		respond(w, 404, map[string]string{"error": "feedback endpoint unavailable"})
 		return
 	}
-	// Bound unauthenticated work without letting bad credentials spend a valid
-	// endpoint's minute-long quota. No forwarded IP headers are trusted here.
+	// This gate covers only authentication's storage read, never a body read
+	// controlled by an unauthenticated client. No forwarded headers are trusted.
 	select {
-	case s.intakeSlots <- struct{}{}:
-		defer func() { <-s.intakeSlots }()
+	case s.authSlots <- struct{}{}:
 	default:
 		w.Header().Set("Retry-After", "1")
 		respond(w, 429, map[string]string{"error": "feedback intake busy"})
 		return
 	}
-	body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, fbhook.MaxRequestBytes))
-	if e != nil {
-		respond(w, 413, map[string]string{"error": "feedback request exceeds 64 KiB"})
-		return
+	authHeld := true
+	releaseAuth := func() {
+		if authHeld {
+			<-s.authSlots
+			authHeld = false
+		}
 	}
-	receipt, e := s.service.AcceptWithAdmission(r.Context(), credential, body, r.Header.Get("Idempotency-Key"), s.admit)
+	defer releaseAuth()
+	admittedID := ""
+	defer func() {
+		if admittedID != "" {
+			s.releaseIntake(admittedID)
+		}
+	}()
+	admit := func(id string) bool {
+		releaseAuth()
+		if !s.admit(id) {
+			return false
+		}
+		admittedID = id
+		return true
+	}
+	readBody := func() ([]byte, error) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, fbhook.MaxRequestBytes))
+		if err != nil {
+			return nil, &service.Error{Status: 413, Message: "feedback request exceeds 64 KiB"}
+		}
+		return body, nil
+	}
+	receipt, e := s.service.AcceptWithAdmission(r.Context(), credential, readBody, r.Header.Get("Idempotency-Key"), admit)
 	if e != nil {
 		if service.ErrorStatus(e) == 429 {
 			w.Header().Set("Retry-After", "60")
@@ -206,12 +231,24 @@ func (s *Server) admit(id string) bool {
 		s.global = 0
 		s.counts = map[string]int{}
 	}
-	if s.global >= 600 || s.counts[id] >= 120 {
+	if s.global >= 600 || s.counts[id] >= 120 || s.activeTotal >= 16 || s.active[id] >= 4 {
 		return false
 	}
 	s.global++
 	s.counts[id]++
+	s.activeTotal++
+	s.active[id]++
 	return true
+}
+
+func (s *Server) releaseIntake(id string) {
+	s.limitMu.Lock()
+	defer s.limitMu.Unlock()
+	s.activeTotal--
+	s.active[id]--
+	if s.active[id] == 0 {
+		delete(s.active, id)
+	}
 }
 func (s *Server) admin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -195,28 +195,76 @@ func (b waitingBody) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-func TestStalledBodiesCannotCreateUnboundedIntakeWork(t *testing.T) {
+func TestStalledInvalidBodiesDoNotBlockAuthenticatedIntake(t *testing.T) {
 	app, _ := testServer(t)
-	credential := strings.Repeat("a", 24) + "." + strings.Repeat("x", 43)
-	started, release := make(chan struct{}, 16), make(chan struct{})
+	credential := intakeFixture(t, app)
+	invalid := strings.Repeat("a", 24) + "." + strings.Repeat("x", 43)
+	started, release := make(chan struct{}, 32), make(chan struct{})
+	finished := make(chan int, 32)
 	var group sync.WaitGroup
 	defer group.Wait()
 	defer close(release)
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 32; i++ {
+		group.Go(func() {
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/feedback/"+invalid, waitingBody{started: started, release: release})
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, r)
+			finished <- w.Code
+		})
+	}
+	reads := 0
+	for i := 0; i < 32; i++ {
+		select {
+		case <-started:
+			reads++
+		case <-finished:
+		case <-time.After(time.Second):
+			t.Fatal("invalid credentials did not finish authentication")
+		}
+	}
+	if got := postFeedback(t, app, credential); got != http.StatusAccepted {
+		t.Fatalf("stalled unauthenticated bodies blocked valid feedback: %d (body reads=%d)", got, reads)
+	}
+	if reads != 0 {
+		t.Fatalf("read %d unauthenticated bodies", reads)
+	}
+}
+
+func TestStalledAuthenticatedEndpointLeavesCapacityForOtherEndpoints(t *testing.T) {
+	app, _ := testServer(t)
+	credential := intakeFixture(t, app)
+	id, _, _ := strings.Cut(credential, ".")
+	ep, _, err := app.service.GetEndpoint(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, other, err := app.service.CreateEndpoint(t.Context(), "Other app", ep.DestinationID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}, 4), make(chan struct{})
+	var group sync.WaitGroup
+	defer group.Wait()
+	defer close(release)
+	for i := 0; i < 4; i++ {
 		group.Go(func() {
 			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/feedback/"+credential, waitingBody{started: started, release: release})
 			r.Header.Set("Content-Type", "application/json")
 			app.ServeHTTP(httptest.NewRecorder(), r)
 		})
 	}
-	for i := 0; i < 16; i++ {
+	for i := 0; i < 4; i++ {
 		select {
 		case <-started:
 		case <-time.After(time.Second):
-			t.Fatal("intake requests did not reach body reads")
+			t.Fatal("authenticated requests did not reach body reads")
 		}
 	}
 	if got := postFeedback(t, app, credential); got != http.StatusTooManyRequests {
-		t.Fatalf("saturated intake did not reject excess work: %d", got)
+		t.Errorf("stalled endpoint concurrency was not capped: %d", got)
+	}
+	if got := postFeedback(t, app, other); got != http.StatusAccepted {
+		t.Errorf("one authenticated endpoint blocked another: %d", got)
 	}
 }
