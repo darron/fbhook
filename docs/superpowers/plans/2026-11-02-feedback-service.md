@@ -120,8 +120,8 @@ Workflow syntax passes actionlint.
 One independent whole-change review found six consequential issues; each was
 reproduced by failing regression tests and corrected, followed by a green suite.
 The exact-byte raw envelope retention and refresh/pagination refinements remain
-minor deferred work. Hosted CI/release/tap execution and live issue-provider writes
-remain unverified. See docs/OPERATIONS.md for those gates and the provisioned Fly
+minor deferred work. Hosted releases and Homebrew tap publication remain
+unverified. See docs/OPERATIONS.md for those gates and the provisioned Fly
 installation. The live Tigris storage contract passed against the dedicated
 `darron-fbhook` bucket on 2026-11-02.
 
@@ -130,8 +130,15 @@ private bucket, nine service/storage/OAuth secrets, public addresses, and one
 Machine in `yyz`. Public health/readiness checks and unauthorized admin rejection
 passed. Browser sign-in reached the private admin as `darron`, and the submission
 panel showed a successful worker scan. The running initial development binary
-reports `fbhook 0.1.0 sha=unknown dirty`; hosted CI and real provider delivery remain
-separate unverified gates.
+reports `fbhook 0.1.0 sha=unknown dirty`.
+
+[Hosted CI](https://github.com/darron/fbhook/actions/runs/41553967000) passed for
+initial implementation commit `61976ea`. Subsequent live end-to-end tests created
+[GitHub issue #1](https://github.com/darron/fbhook/issues/1) and
+[Linear FBH-1](https://linear.app/froese/issue/FBH-1/fbhook-end-to-end-linear-delivery-test).
+Both destinations delivered in one attempt; identical retries returned one receipt,
+conflicting retries returned 409, and nested JSON/large integers were preserved.
+Provider credentials were saved through the private admin and encrypted in storage.
 
 The original checkboxes above preserve the proposed step checklist; this outcome
 records completed areas and actual evidence rather than claiming every proposed

@@ -19,8 +19,24 @@ as `darron`, and completed worker scans without an error. The initial image is
 `registry.fly.io/darron-fbhook:bootstrap-20261102`, digest
 `sha256:c8a0d019ad410848179fcd61207438daadc66bed0f70a8d1020e59360503fefb`.
 It was built from the local development tree; the running binary reports
-`fbhook 0.1.0 sha=unknown dirty`. No GitHub or Linear destination has been configured
-or tested against a real issue tracker yet.
+`fbhook 0.1.0 sha=unknown dirty`.
+
+Live issue delivery was subsequently verified on 2026-11-02 for both destinations:
+
+- GitHub destination `fbhook repository` targets `darron/fbhook`; its integration
+  test created [issue #1](https://github.com/darron/fbhook/issues/1).
+- Linear destination `fbhook feedback` targets team `fbhook` (`FBH`), UUID
+  `59d2dfb9-d9ba-4aba-8774-fc5d7a0d02f8`; its integration test created
+  [FBH-1](https://linear.app/froese/issue/FBH-1/fbhook-end-to-end-linear-delivery-test).
+
+Both tests used the Go CLI through separate generated feedback URLs, repeated
+the same payload/key and received the same receipt, and confirmed delivery in
+one worker attempt. Source data, nested JSON and `9007199254740993` were preserved
+in the created issues. Changed payloads with the same key returned 409; malformed,
+missing-feedback and oversized requests returned 400, 400 and 413 respectively.
+The URLs are credentials and are deliberately excluded from this repository.
+The GitHub destination token expires on 2026-12-02; replace it through destination
+editing before expiry. Credential rotation does not require changing feedback URLs.
 
 Deploy this installation directly from the repository root:
 
@@ -167,8 +183,8 @@ FBHOOK_TEST_TIGRIS=1 go test -run TestLiveContract -count=1 -v ./storage/tigris
 This writes test objects in a random `fbhook-contract/<timestamp>/` prefix and
 prints that prefix. It intentionally does not delete objects; inspect and remove
 that test prefix through your normal storage tools. Never use a bucket where
-these writes are unwanted. Live Tigris, GitHub and Linear compatibility must be
-checked with your configured accounts before relying on production delivery.
+these writes are unwanted. Repeat the storage and provider verification for a
+different installation or provider account before relying on its delivery.
 
 ## Fly deployment
 
