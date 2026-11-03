@@ -76,8 +76,8 @@ Follow [operations](docs/OPERATIONS.md#deploy-to-fly). Embed the exact revision 
 clean state. Check the running executable, Fly readiness, authenticated worker scans
 and admin rendering. Report acceptance, delivery and provider read-back separately.
 
-For authorized issue-creation tests, reuse the saved URLs described in
-[operations](docs/OPERATIONS.md#this-installation). Resume, submit with a unique key,
+For authorized issue-creation tests, reuse saved URLs from the operator's private
+installation runbook. Resume, submit with a unique key,
 replay the same payload/key, verify issue content, then pause the test endpoints.
 Do not rotate or recreate URLs each run. Keep credentials out of logs, commits,
 review packets and issue bodies.

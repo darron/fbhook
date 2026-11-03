@@ -10,6 +10,17 @@ form or agent tool; issue readers decide what happens next.
 Application / agent → secret URL → object storage → worker → GitHub / Linear
 ```
 
+## Install the CLI
+
+```sh
+brew install darron/tap/fbhook
+fbhook version
+```
+
+Homebrew installs a prebuilt binary for macOS or Linux on Apple Silicon/ARM64
+or Intel/AMD64. It needs no Go, Node or Python installation. Downloads require
+public release assets.
+
 ## Send feedback
 
 1. Sign in to fbhook with GitHub.
@@ -67,3 +78,8 @@ These Tweets started the project:
 [@patrickc](https://x.com/patrickc/status/2116636967517798672),
 [@zeeg](https://x.com/zeeg/status/2116657400312971463), and
 [@tanayj](https://x.com/tanayj/status/2116313952888263141).
+
+## License
+
+[MIT](LICENSE). Bundled components retain the licenses in
+[third-party notices](THIRD_PARTY_NOTICES.txt).

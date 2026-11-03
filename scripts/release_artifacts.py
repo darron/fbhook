@@ -38,12 +38,15 @@ def archive_name(tag, os_name, arch):
     return "fbhook_{}_{}_{}.tar.gz".format(tag[1:], os_name, arch)
 
 
-def package(binary, license_path, output, tag, os_name, arch):
+def package(binary, source, output, tag, os_name, arch):
     destination = output / archive_name(tag, os_name, arch)
     # Fixed metadata avoids changing archives solely because of build time or uid.
     with destination.open("wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode="w") as archive:
-            for name, path, mode in (("fbhook", binary, 0o755), ("README.md", license_path, 0o644)):
+            for name, path, mode in (("fbhook", binary, 0o755),
+                                     ("README.md", source / "README.md", 0o644),
+                                     ("LICENSE", source / "LICENSE", 0o644),
+                                     ("THIRD_PARTY_NOTICES.txt", source / "THIRD_PARTY_NOTICES.txt", 0o644)):
                 data = path.read_bytes()
                 info = tarfile.TarInfo(name)
                 info.size, info.mode = len(data), mode
@@ -124,7 +127,7 @@ def build(source, output, tag, revision):
                 if command([str(binary), "version"]) != "fbhook {} sha={} clean".format(tag[1:], revision):
                     raise ValueError("built CLI version metadata does not match release")
                 subprocess.run([str(binary), "help"], check=True, stdout=subprocess.DEVNULL)
-            package(binary, source / "README.md", output, tag, os_name, arch)
+            package(binary, source, output, tag, os_name, arch)
             print("Built " + archive_name(tag, os_name, arch), flush=True)
     write_checksums(output, tag)
     verify_bundle(output, tag)

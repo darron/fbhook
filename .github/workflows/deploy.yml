@@ -4,7 +4,6 @@ on:
     inputs:
       app:
         description: Existing dedicated Fly application
-        default: darron-fbhook
         required: true
         type: string
       region:
@@ -44,12 +43,17 @@ jobs:
       - name: Deploy with Fly CLI
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DEPLOY_CONFIG: ${{ secrets.FLY_CONFIG_TOML }}
           DEPLOY_APP: ${{ inputs.app }}
           DEPLOY_REGION: ${{ inputs.region }}
           DEPLOY_REVISION: ${{ github.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$DEPLOY_REVISION"
           test -z "$(git status --porcelain --untracked-files=all)"
+          test -n "$DEPLOY_CONFIG" || { echo 'Configure the production FLY_CONFIG_TOML secret.'; exit 1; }
+          umask 077
+          trap 'rm -f fly.toml' EXIT
+          printf '%s\n' "$DEPLOY_CONFIG" > fly.toml
           fly deploy --app "$DEPLOY_APP" --primary-region "$DEPLOY_REGION" \
             --remote-only --ha=false \
             --build-arg "BUILD_REVISION=$DEPLOY_REVISION" --build-arg BUILD_STATE=clean
