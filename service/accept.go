@@ -96,7 +96,24 @@ func (s *Service) GetSubmission(ctx context.Context, ep, id string) (Submission,
 	if !ValidID(ep) || !ValidID(id) {
 		return Submission{}, "", storage.ErrNotFound
 	}
-	return readJSON[Submission](ctx, s.store, submissionKey(ep, id))
+	sub, version, err := readJSON[Submission](ctx, s.store, submissionKey(ep, id))
+	// Older records lack the durable flag. Recover unresolved uncertainty from
+	// retained history, stopping at a later attempt or acknowledged retry.
+	if !sub.CreationUncertain && sub.State != "delivered" {
+		if sub.State == "delivery_uncertain" {
+			sub.CreationUncertain = true
+		}
+		for i := len(sub.History) - 1; !sub.CreationUncertain && i >= 0; i-- {
+			event := sub.History[i]
+			if event.To == "pending" || event.To == "delivering" || event.To == "delivered" {
+				break
+			}
+			if event.To == "delivery_uncertain" || event.From == "delivery_uncertain" {
+				sub.CreationUncertain = true
+			}
+		}
+	}
+	return sub, version, err
 }
 func (s *Service) ListSubmissions(ctx context.Context, cursor string) ([]Submission, string, error) {
 	p, e := s.store.List(ctx, "submissions/", cursor, 50)

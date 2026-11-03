@@ -178,10 +178,16 @@ Linear GraphQL errors remain uncertain even when the mutation result is null:
 that alone does not prove creation had no side effects.
 In the private submission panel:
 
-1. Link an existing issue by its provider ID; the server verifies target and marker.
+1. Link an existing issue by its provider ID; the server verifies target, marker,
+   and captured labels. Linear label verification follows pagination as needed.
 2. Retry after checking upstream state. Uncertain retry requires an explicit
    duplicate-risk acknowledgement and a reason.
-3. Abandon delivery with a reason. This retains feedback and history.
+3. Abandon delivery with a reason. This retains feedback and history and stops
+   automatic work. It does not prove a previously uncertain creation failed:
+   linking remains available and any later retry still requires duplicate-risk
+   acknowledgement. A durable uncertainty flag survives history truncation.
+   Older records recover that flag from retained uncertainty events; already
+   discarded legacy history cannot be reconstructed.
 
 Actions record the administrator's stable GitHub ID. The latest 20 events plus a
 total event count are retained. Manual retry resets the automatic-attempt budget

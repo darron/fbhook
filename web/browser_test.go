@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/darron/fbhook/service"
 	"github.com/darron/fbhook/storage/memory"
 	"net/http/httptest"
@@ -48,12 +49,24 @@ func TestBrowserSmoke(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, _ = svc.Accept(ctx, credential, []byte(`{"feedback":"Keep search filters when returning to results","source":{"app":"Archive","actor":"agent"},"context":{"page":"/search","filters":{"year":2026},"large_integer":9007199254740993,"large_exponent":1e10000,"literal":"<script>window.injected=true</script>"}}`), "one")
-	_, _ = svc.Accept(ctx, credential, []byte(`{"feedback":"An uncertain export response","source":{"app":"Converge","actor":"agent"},"context":{"request_id":"req_example"}}`), "two")
+	if _, e = svc.Accept(ctx, credential, []byte(`{"feedback":"Keep search filters when returning to results","source":{"app":"Archive","actor":"agent"},"context":{"page":"/search","filters":{"year":2026},"large_integer":9007199254740993,"large_exponent":1e10000,"literal":"<script>window.injected=true</script>"}}`), "one"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = svc.Accept(ctx, credential, []byte(`{"feedback":"An uncertain export response","source":{"app":"Converge","actor":"agent"},"context":{"request_id":"req_example"}}`), "two"); e != nil {
+		t.Fatal(e)
+	}
 	if e = svc.Scan(ctx, false); e != nil {
 		t.Fatal(e)
 	}
-	_, _ = svc.Accept(ctx, credential, []byte(`{"feedback":"Make the date range easier to change","source":{"app":"Archive","actor":"human"}}`), "three")
+	if _, e = svc.Accept(ctx, credential, []byte(`{"feedback":"Make the date range easier to change","source":{"app":"Archive","actor":"human"}}`), "three"); e != nil {
+		t.Fatal(e)
+	}
+	// Fill a second page so the browser exercises real storage pagination.
+	for index := range 55 {
+		if _, e = svc.Accept(ctx, credential, []byte(fmt.Sprintf(`{"feedback":"History fixture %d"}`, index)), fmt.Sprintf("history-%d", index)); e != nil {
+			t.Fatal(e)
+		}
+	}
 	dev, _, e := svc.CreateEndpoint(ctx, "Development & experiments", d.ID, nil)
 	if e != nil {
 		t.Fatal(e)

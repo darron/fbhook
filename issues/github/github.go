@@ -71,6 +71,8 @@ func (p *Provider) Validate(ctx context.Context, d service.Destination, token st
 	return nil
 }
 
+var errIssueMismatch = errors.New("issue marker or identity mismatch")
+
 type issueResponse struct {
 	Number      int             `json:"number"`
 	URL         string          `json:"html_url"`
@@ -117,7 +119,7 @@ func (p *Provider) Find(ctx context.Context, d service.Destination, token string
 			return service.IssueRef{}, e
 		}
 		if out.Number != n || out.URL == "" || !hasLabels(out, d.Labels) || len(out.PullRequest) > 0 || !strings.HasSuffix(strings.TrimSpace(out.Body), "<!-- fbhook:"+issue.ID+" -->") {
-			return service.IssueRef{}, errors.New("issue marker or identity mismatch")
+			return service.IssueRef{}, errIssueMismatch
 		}
 		return service.IssueRef{ID: strconv.Itoa(n), URL: out.URL}, nil
 	}
@@ -131,9 +133,23 @@ func (p *Provider) Find(ctx context.Context, d service.Destination, token string
 		return service.IssueRef{}, e
 	}
 	for _, candidate := range result.Items {
-		if ref, e := p.Find(ctx, d, token, issue, strconv.Itoa(candidate.Number)); e == nil {
+		if candidate.Number <= 0 {
+			continue
+		}
+		ref, e := p.Find(ctx, d, token, issue, strconv.Itoa(candidate.Number))
+		if e == nil {
 			return ref, nil
 		}
+		if errors.Is(e, errIssueMismatch) {
+			continue
+		}
+		var pe *service.ProviderError
+		if errors.As(e, &pe) && pe.Kind == "not_found" {
+			continue
+		}
+		// Preserve throttling, permission, transport and malformed-response failures.
+		// More verification requests would only deepen the operational failure.
+		return service.IssueRef{}, e
 	}
 	return service.IssueRef{}, errors.New("existing issue not confirmed")
 }

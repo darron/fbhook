@@ -32,9 +32,10 @@ func (s *Service) Resolve(ctx context.Context, ep, id string, in Resolution) err
 		if sub.State != "failed" && sub.State != "delivery_uncertain" && sub.State != "retry_scheduled" {
 			return problem(409, "submission is not eligible for retry")
 		}
-		if sub.State == "delivery_uncertain" && !in.AcknowledgeDuplicate {
+		if sub.CreationUncertain && !in.AcknowledgeDuplicate {
 			return problem(400, "uncertain retry requires acknowledgement of possible duplication")
 		}
+		sub.CreationUncertain = false
 		sub.Attempts = 0
 		sub.NextAttempt = s.now()
 		sub.Error = ""
@@ -46,7 +47,7 @@ func (s *Service) Resolve(ctx context.Context, ep, id string, in Resolution) err
 		s.event(&sub, "failed", in.Actor, in.Reason)
 		sub.Error = "delivery abandoned by administrator"
 	case "link":
-		canLink := sub.State == "delivery_uncertain" || sub.State == "failed" && sub.Reference != nil
+		canLink := sub.CreationUncertain || sub.State == "failed" && sub.Reference != nil
 		if !canLink || in.Reference == "" {
 			return problem(400, "link requires an uncertain submission and provider issue ID")
 		}
