@@ -19,23 +19,30 @@ class ReleaseArtifactsTests(unittest.TestCase):
         self.output.mkdir()
         self.binary = self.root / "fbhook"
         self.binary.write_bytes(b"test binary\x00\xff")
-        self.license = self.root / "README.md"
-        self.license.write_text("MIT fixture\n")
+        for name, content in (("README.md", "README fixture\n"),
+                              ("LICENSE", "MIT fixture\n"),
+                              ("THIRD_PARTY_NOTICES.txt", "Notices fixture\n")):
+            (self.root / name).write_text(content)
 
     def bundle(self):
         for os_name in ("darwin", "linux"):
             for arch in ("amd64", "arm64"):
-                release.package(self.binary, self.license, self.output, "v0.9.0", os_name, arch)
+                release.package(self.binary, self.root, self.output, "v0.9.0", os_name, arch)
         release.write_checksums(self.output, "v0.9.0")
 
-    def test_archives_contain_only_executable_cli_and_license(self):
+    def test_archives_contain_executable_and_required_documents(self):
         self.bundle()
         archive = self.output / "fbhook_0.9.0_linux_arm64.tar.gz"
         with tarfile.open(archive) as source:
-            self.assertEqual(source.getnames(), ["fbhook", "README.md"])
+            self.assertEqual(source.getnames(), ["fbhook", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.txt"])
             self.assertEqual(source.extractfile("fbhook").read(), b"test binary\x00\xff")
             self.assertEqual(source.getmember("fbhook").mode, 0o755)
             self.assertEqual(source.getmember("README.md").mode, 0o644)
+            self.assertEqual(source.extractfile("README.md").read(), b"README fixture\n")
+            self.assertEqual(source.extractfile("LICENSE").read(), b"MIT fixture\n")
+            self.assertEqual(source.extractfile("THIRD_PARTY_NOTICES.txt").read(), b"Notices fixture\n")
+            self.assertEqual(source.getmember("LICENSE").mode, 0o644)
+            self.assertEqual(source.getmember("THIRD_PARTY_NOTICES.txt").mode, 0o644)
         files = release.verify_bundle(self.output, "v0.9.0")
         self.assertEqual(len(files), 9)
         expected = hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + archive.name + "\n"
@@ -79,7 +86,7 @@ class ReleaseArtifactsTests(unittest.TestCase):
             with self.subTest(revision=revision), self.assertRaises(ValueError):
                 release.validate_metadata("v0.9.0", revision)
         with self.assertRaises(ValueError):
-            release.package(self.binary, self.license, self.output, "v0.9.0", "windows", "amd64")
+            release.package(self.binary, self.root, self.output, "v0.9.0", "windows", "amd64")
         self.assertEqual(list(self.output.iterdir()), [])
 
     def test_source_version_must_match_tag(self):

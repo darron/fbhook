@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.1.0
+## 0.1.0 — 2026-11-03
 
 ### Added
 
@@ -9,6 +9,8 @@
 - GitHub OAuth admin for destinations, endpoints and delivery recovery.
 - Standard-library-only Go client, CLI and embedded Svelte admin.
 - CI, release archives/checksums, Homebrew automation and manual Fly deployment.
+- MIT license and bundled third-party notices in release archives.
+- Public Fly configuration sample with private deployment configuration kept local.
 
 ### Fixed
 
@@ -25,5 +27,5 @@
 
 - Replace completed Superpowers plans/specs with concise integration and operations docs.
 - Add `AGENTS.md` for code boundaries, review, verification and delivery workflow.
-- Link the three Tweets that inspired fbhook and document reusable live-test URLs.
+- Link the three Tweets that inspired fbhook; keep installation details in a private runbook.
 - Apply the `i-have-adhd` writing skill throughout the maintained docs.

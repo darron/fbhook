@@ -6,6 +6,7 @@ node_modules/
 web/ui/dist/*
 !web/ui/dist/README.txt
 .env
+/fly.toml
 *.local
 __pycache__/
 *.pyc

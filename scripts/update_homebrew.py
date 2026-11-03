@@ -11,12 +11,12 @@ from pathlib import Path
 import release_artifacts as release
 
 
-def formula(repo, tag, hashes):
-    release.validate_metadata(tag, '0' * 40)
+def formula(repo, tag, hashes, revision):
+    release.validate_metadata(tag, revision)
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise ValueError('invalid repository')
     lines = ['class Fbhook < Formula', '  desc "Shared feedback intake and issue delivery"',
-             f'  homepage "https://github.com/{repo}"', f'  version "{tag[1:]}"']
+             f'  homepage "https://github.com/{repo}"', f'  version "{tag[1:]}"', '  license "MIT"']
     for platform, ruby_platform in (('darwin', 'macos'), ('linux', 'linux')):
         lines.append(f'  on_{ruby_platform} do')
         for arch, ruby_arch in (('arm64', 'arm'), ('amd64', 'intel')):
@@ -28,8 +28,9 @@ def formula(repo, tag, hashes):
                           f'      url "https://github.com/{repo}/releases/download/{tag}/{name}"',
                           f'      sha256 "{digest}"', '    end'])
         lines.append('  end')
-    lines.extend(['  def install', '    bin.install "fbhook"', '  end', '  test do',
-                  f'    assert_match "fbhook {tag[1:]} sha=", shell_output("#{{bin}}/fbhook version")',
+    lines.extend(['', '  # Preserve the exact executable published on GitHub.',
+                  '  skip_clean "bin/fbhook"', '', '  def install', '    bin.install "fbhook"', '  end', '  test do',
+                  f'    assert_equal "fbhook #{{version}} sha={revision} clean\\n", shell_output("#{{bin}}/fbhook version")',
                   '    assert_match "shared feedback", shell_output("#{bin}/fbhook help")',
                   '  end', 'end', ''])
     return '\n'.join(lines)
@@ -44,6 +45,8 @@ def update(repo, tag, tap):
                                          '--json', 'tagName,isDraft,isPrerelease']))
     if metadata != dict(tagName=tag, isDraft=False, isPrerelease=False):
         raise ValueError('published stable release required')
+    revision = release.command(['gh', 'api', f'repos/{repo}/commits/{tag}', '--jq', '.sha'])
+    release.validate_metadata(tag, revision)
     with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         subprocess.run(['gh', 'release', 'download', tag, '--repo', repo, '--pattern', 'fbhook_*',
@@ -51,10 +54,10 @@ def update(repo, tag, tap):
         release.verify_bundle(directory, tag)
         hashes = {p.name: release.hashlib.sha256(p.read_bytes()).hexdigest()
                   for p in release.archive_paths(directory, tag)}
-    content = formula(repo, tag, hashes)
-    env = dict(os.environ, GH_TOKEN=os.environ.get('HOMEBREW_TAP_TOKEN', ''))
-    if not env['GH_TOKEN']:
-        raise ValueError('HOMEBREW_TAP_TOKEN with Contents read/write on the tap is required')
+    content = formula(repo, tag, hashes, revision)
+    env = dict(os.environ)
+    if os.environ.get('HOMEBREW_TAP_TOKEN'):
+        env['GH_TOKEN'] = os.environ['HOMEBREW_TAP_TOKEN']
     endpoint = f'repos/{tap}/contents/Formula/fbhook.rb'
     result = subprocess.run(['gh', 'api', endpoint], env=env, text=True, capture_output=True)
     sha = None

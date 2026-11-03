@@ -91,15 +91,17 @@ records, so storage reads and scan time grow with history.
 canary/bluegreen or extra replicas can overlap workers.
 
 1. Use a clean `main` checkout with passing CI, unless testing a branch was requested.
-2. Install app secrets and confirm `fly.toml` targets the intended app and region.
-3. Check `fly machine list --app darron-fbhook` shows the intended single Machine.
+2. Copy `fly.toml.sample` to `fly.toml`. Set your app name, URL, admin username
+   and region, then install app secrets. `fly.toml` is Git-ignored and excluded
+   from Docker builds.
+3. Check `fly machine list --app YOUR_APP` shows the intended single Machine.
 4. Deploy with source identity:
 
 ```sh
 set -eu
 revision=$(git rev-parse HEAD)
 test -z "$(git status --porcelain --untracked-files=all)"
-fly deploy --app darron-fbhook --primary-region yyz --remote-only --ha=false \
+fly deploy --app YOUR_APP --primary-region YOUR_REGION --remote-only --ha=false \
   --build-arg BUILD_REVISION="$revision" --build-arg BUILD_STATE=clean
 ```
 
@@ -111,32 +113,17 @@ fly deploy --app darron-fbhook --primary-region yyz --remote-only --ha=false \
 | `/healthz`, `/readyz` | HTTP 200; readiness includes storage access |
 | Anonymous `/api/v1/admin/status` | HTTP 401 |
 | Authenticated **Submissions** | Recent advancing scan, no scan error |
-| `fly checks list --app darron-fbhook` | Passing |
+| `fly checks list --app YOUR_APP` | Passing |
 
 Readiness alone does not prove issue delivery. For deployment problems, inspect
 `fly status`, `fly checks list` and `fly logs`; do not print secrets or feedback URLs.
 
 The manual **Deploy to Fly** workflow runs only from `main`. Configure an app-scoped
-`FLY_API_TOKEN` in GitHub's `production` environment and restrict that environment
-to `main`. Pushes do not deploy. `--ha=false` avoids an initial spare Machine;
+`FLY_API_TOKEN` and a `FLY_CONFIG_TOML` secret containing your complete private
+`fly.toml` in GitHub's `production` environment. Restrict that environment to `main`.
+The workflow writes the ignored config only for deployment, then removes it.
+Pushes do not deploy. `--ha=false` avoids an initial spare Machine;
 `min_machines_running` is not a replica limit.
-
-### This installation
-
-App and bucket: `darron-fbhook`. Region: `yyz`. Admin: `darron`.
-URL: [darron-fbhook.fly.dev](https://darron-fbhook.fly.dev).
-GitHub target: `darron/fbhook`. Linear team: `fbhook` (`FBH`).
-The configured GitHub PAT expires **2026-12-02**; replace it before expiry.
-
-Reusable test URLs are in `/Users/darron/src/fbhook/.integration-endpoints.local`
-(JSON; owner-only permissions; Git-ignored and excluded from Docker builds).
-**Resume those endpoints for an authorized test; pause them afterward.** Reuse the
-URLs rather than generating new endpoints. Never print or commit their contents.
-
-Live creation passed on 2026-11-03 in one attempt per provider:
-[GitHub #5](https://github.com/darron/fbhook/issues/5) and
-[Linear FBH-2](https://linear.app/froese/issue/FBH-2/fbhook-pr-4-linear-delivery-verification-pr4-adddaa3-2026-11-03t20-23).
-Identical intake replays returned the same receipt; changed content returned `409`.
 
 ## Verify storage
 
@@ -163,5 +150,17 @@ prefix. The test prints that prefix; remove it later with your storage tools.
 
 Assets are immutable: an existing asset must be byte-identical. **Update Homebrew**
 verifies published hashes and requires `HOMEBREW_TAP_TOKEN` with Contents read/write
-on `darron/homebrew-tap`. That job can be rerun independently after publication.
-Choose a project license before publishing for third-party reuse.
+on your tap. Set the repository variable `HOMEBREW_TAP_ENABLED=true` to enable
+automatic updates after release publication; leave it unset while preparing a
+private release. **Update Homebrew** can also be run independently.
+
+For a host-authenticated manual update, run:
+
+```sh
+env -u GH_TOKEN -u GITHUB_TOKEN python3 scripts/update_homebrew.py \
+  --repo OWNER/REPOSITORY --tag vMAJOR.MINOR.PATCH --tap OWNER/homebrew-tap
+```
+
+Release archives include the MIT license and bundled dependency notices. Python
+is used by release automation and browser checks; the installed binary and
+deployed service do not need it.

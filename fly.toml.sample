@@ -1,4 +1,5 @@
-app = "darron-fbhook"
+# Copy to fly.toml and replace the app name, URL and admin username.
+app = "your-fbhook-app"
 primary_region = "yyz"
 kill_signal = "SIGTERM"
 kill_timeout = 30
@@ -11,8 +12,8 @@ kill_timeout = 30
   max_unavailable = 1
 
 [env]
-  FBHOOK_BASE_URL = "https://darron-fbhook.fly.dev"
-  FBHOOK_GITHUB_USERS = "darron"
+  FBHOOK_BASE_URL = "https://your-fbhook-app.fly.dev"
+  FBHOOK_GITHUB_USERS = "your-github-username"
   FBHOOK_POLL_INTERVAL = "15s"
   AWS_REGION = "auto"
 
