@@ -1,288 +1,167 @@
-# Operating fbhook
+# Operate fbhook
 
-## Provisioned installation
+**Run one process and one worker in one region.** Keep it running between requests.
 
-The initial installation uses Fly app `darron-fbhook` in `yyz` (Toronto),
-with private Tigris bucket `darron-fbhook`. Its canonical origin is
-`https://darron-fbhook.fly.dev`, and the initial administrator is `darron`.
-The GitHub OAuth application is named `fbhook`, with callback
-`https://darron-fbhook.fly.dev/auth/callback`.
+## Set up the service
 
-Storage credentials and encryption/session keys are stored as Fly secrets.
-The live Tigris storage contract passed on 2026-11-02. Its disposable verification
-objects remain under `fbhook-contract/1793665436737877000/`.
+1. Create a private Tigris bucket and dedicated read/write/list credentials.
+2. Register a GitHub OAuth app. Use your HTTPS base URL as its homepage and
+   `<base-url>/auth/callback` as its callback.
+3. Run `fbhook keygen`; save the encryption and session keys in your secret manager.
+4. Set the variables below and start `fbhook serve` behind HTTPS.
+5. Sign in, add a destination, then create and save an endpoint URL.
 
-Initial deployment verification on 2026-11-02 confirmed one started Machine
-(`17811100df6389`) in `yyz`, a passing Fly readiness check, public health/readiness
-responses, rejection of unauthenticated admin requests, successful GitHub sign-in
-as `darron`, and completed worker scans without an error. The initial image is
-`registry.fly.io/darron-fbhook:bootstrap-20261102`, digest
-`sha256:c8a0d019ad410848179fcd61207438daadc66bed0f70a8d1020e59360503fefb`.
-It was built from the local development tree; the running binary reports
-`fbhook 0.1.0 sha=unknown dirty`.
+### Storage
 
-Live issue delivery was subsequently verified on 2026-11-02 for both destinations:
+| Variable | Value |
+| --- | --- |
+| `BUCKET_NAME` | Dedicated bucket |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Dedicated Tigris credentials |
+| `AWS_ENDPOINT_URL_S3` | Default: `https://t3.storage.dev` |
+| `AWS_REGION` | Default: `auto` |
+| `FBHOOK_STORAGE_PREFIX` | Optional object prefix |
 
-- GitHub destination `fbhook repository` targets `darron/fbhook`; its integration
-  test created [issue #1](https://github.com/darron/fbhook/issues/1).
-- Linear destination `fbhook feedback` targets team `fbhook` (`FBH`), UUID
-  `59d2dfb9-d9ba-4aba-8774-fc5d7a0d02f8`; its integration test created
-  [FBH-1](https://linear.app/froese/issue/FBH-1/fbhook-end-to-end-linear-delivery-test).
+### Service and sign-in
 
-Both tests used the Go CLI through separate generated feedback URLs, repeated
-the same payload/key and received the same receipt, and confirmed delivery in
-one worker attempt. Source data, nested JSON and `9007199254740993` were preserved
-in the created issues. Changed payloads with the same key returned 409; malformed,
-missing-feedback and oversized requests returned 400, 400 and 413 respectively.
-The URLs are credentials and are deliberately excluded from this repository.
-The GitHub destination token expires on 2026-12-02; replace it through destination
-editing before expiry. Credential rotation does not require changing feedback URLs.
+| Variable | Value |
+| --- | --- |
+| `FBHOOK_BASE_URL` | Canonical HTTPS origin |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | OAuth app credentials |
+| `FBHOOK_GITHUB_USERS` | Comma-separated admin usernames |
+| `FBHOOK_ENCRYPTION_KEY` | Base64 of 32 random bytes |
+| `FBHOOK_SESSION_KEY` | Base64 of 64 random bytes |
+| `FBHOOK_POLL_INTERVAL` | Default `15s`; range `1s`–`1h` |
 
-Deploy this installation directly from the repository root:
+Back up the object prefix and encryption key together. Losing the encryption key
+makes stored tracker credentials unreadable. Changing the session key signs users out.
+
+Admin names bind to stable GitHub account IDs at first sign-in. Removing a name
+revokes that binding's access. For a renamed account, add and bind its new username
+before removing the old entry. Never silently reassign an existing binding.
+Sessions expire after eight hours; admin mutations require CSRF.
+
+## Connect a destination
+
+| Provider | Target | Credential |
+| --- | --- | --- |
+| GitHub | `owner/repository` | Fine-grained PAT: Issues read/write and metadata read; push permission for configured labels |
+| Linear | Team UUID; optional project UUID | API key able to read team/project/labels and create issues |
+
+Use existing GitHub label names or Linear label UUIDs. Labels belong to the
+destination. GitHub sign-in does not grant issue-writing permission.
+
+Save replacement tracker credentials by editing the destination. Queued work uses
+the current credential but keeps its captured target, labels and rendered issue.
+Pausing an endpoint stops intake; accepted submissions still deliver.
+
+## Recover a delivery
+
+**Open Submissions and inspect the record before retrying.**
+
+| State | Action |
+| --- | --- |
+| `pending`, `delivering`, `retry_scheduled` | Check worker status; scheduled retries honor provider delays |
+| `failed` | Fix credentials/configuration, then retry with a reason |
+| `delivery_uncertain` | Find the issue upstream; link its provider ID if it exists |
+| `delivered` | Open the recorded issue link |
+
+The worker makes at most ten automatic creation attempts. Timeouts, ambiguous
+responses and interrupted creation become uncertain; they never trigger blind
+automatic recreation. An absent search result does not prove creation failed.
+
+For an uncertain record, choose one action:
+
+1. **Link:** supply the issue's provider ID. fbhook verifies target, marker and labels.
+2. **Retry:** check upstream first; give a reason and acknowledge possible duplication.
+3. **Abandon:** give a reason to stop delivery while retaining the record.
+
+Abandoning preserves uncertainty: later linking remains possible, and a later retry
+still needs acknowledgement. Records from before the durable uncertainty flag can
+recover it only from retained history. Already discarded legacy history is unrecoverable.
+If an issue reference is already recorded, correct that issue's defaults and link
+it; retrying creation is blocked.
+
+History retains the latest 20 events plus a lifetime count. Manual retry resets
+the attempt budget. Submissions have no automatic expiry. Scans read all retained
+records, so storage reads and scan time grow with history.
+
+## Deploy to Fly
+
+**Keep exactly one Machine.** Rolling replacement briefly interrupts service;
+canary/bluegreen or extra replicas can overlap workers.
+
+1. Use a clean `main` checkout with passing CI, unless testing a branch was requested.
+2. Install app secrets and confirm `fly.toml` targets the intended app and region.
+3. Check `fly machine list --app darron-fbhook` shows the intended single Machine.
+4. Deploy with source identity:
 
 ```sh
-fly deploy --ha=false
+set -eu
+revision=$(git rev-parse HEAD)
+test -z "$(git status --porcelain --untracked-files=all)"
+fly deploy --app darron-fbhook --primary-region yyz --remote-only --ha=false \
+  --build-arg BUILD_REVISION="$revision" --build-arg BUILD_STATE=clean
 ```
 
-Keep one Machine in one region. Configure the first GitHub or Linear destination
-and feedback URL in the private admin interface after signing in.
+5. Verify the running binary, health, admin access and advancing worker scans.
 
-## Service configuration
-
-Create a private Tigris bucket through your existing Fly.io account. Use a bucket
-and access credentials dedicated to fbhook. Nothing in this repository creates a
-bucket or application automatically.
-
-| Environment variable | Value |
+| Check | Expected |
 | --- | --- |
-| `AWS_ENDPOINT_URL_S3` | `https://t3.storage.dev` (default) |
-| `AWS_ACCESS_KEY_ID` | Tigris access key with GetObject, PutObject and ListBucket |
-| `AWS_SECRET_ACCESS_KEY` | Tigris secret |
-| `AWS_REGION` | `auto` (default) |
-| `BUCKET_NAME` | Bucket name supplied by Fly/Tigris |
-| `FBHOOK_STORAGE_PREFIX` | Optional dedicated object prefix (default empty) |
-| `FBHOOK_BASE_URL` | Canonical HTTPS origin, e.g. `https://feedback.example.com` |
-| `GITHUB_CLIENT_ID` | GitHub OAuth app client ID |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth app secret |
-| `FBHOOK_GITHUB_USERS` | Comma-separated initial/configured authorized usernames |
-| `FBHOOK_ENCRYPTION_KEY` | Base64 of 32 random bytes from `fbhook keygen` |
-| `FBHOOK_SESSION_KEY` | Base64 of 64 random bytes from `fbhook keygen` |
-| `FBHOOK_POLL_INTERVAL` | Optional worker scan interval, default `15s`, range `1s`–`1h` |
+| `fbhook version` inside the running Machine | Exact deployed SHA and `clean` |
+| `/healthz`, `/readyz` | HTTP 200; readiness includes storage access |
+| Anonymous `/api/v1/admin/status` | HTTP 401 |
+| Authenticated **Submissions** | Recent advancing scan, no scan error |
+| `fly checks list --app darron-fbhook` | Passing |
 
-The service adapter uses static Tigris credentials, not an ambient AWS credential
-chain. Confirm variable names against `storage/tigris/tigris.go` when adapting another host.
+Readiness alone does not prove issue delivery. For deployment problems, inspect
+`fly status`, `fly checks list` and `fly logs`; do not print secrets or feedback URLs.
 
-Register a GitHub OAuth app with homepage `FBHOOK_BASE_URL` and callback
-`FBHOOK_BASE_URL/auth/callback`. Login requests `read:user`; it does not grant
-issue-writing access. At first login, the configured username is resolved using
-the authenticated GitHub API and permanently bound to its numeric GitHub user ID.
-A reassigned username cannot inherit the existing binding. Removing a configured
-name revokes its bound ID on the next authenticated request. A renamed account
-retains access through its existing ID while the original config entry remains.
-To grant the newly named account explicitly, add the new username and let it bind
-before removing its old entry. Never silently edit an existing binding to another
-account; audit and explicitly remove an obsolete object binding during recovery.
+The manual **Deploy to Fly** workflow runs only from `main`. Configure an app-scoped
+`FLY_API_TOKEN` in GitHub's `production` environment and restrict that environment
+to `main`. Pushes do not deploy. `--ha=false` avoids an initial spare Machine;
+`min_machines_running` is not a replica limit.
 
-Run behind HTTPS. The server origin, Go sender and Tigris adapter reject remote
-HTTP URLs; HTTP is accepted only for `localhost`, `127.0.0.1` or `::1` development.
-Cookies
-are HttpOnly, encrypted/signed, SameSite=Lax, and Secure outside local HTTP. Sessions
-expire after eight hours. Mutations require CSRF; private assets and every admin
-API route require authorization. There is no public submission read/status API.
+### This installation
 
-`fbhook serve --listen :8080` runs HTTP and one worker. `/healthz` checks the process;
-`/readyz` checks storage listing, not successful provider delivery. Concurrent
-readiness checks share one probe, with both success and failure cached for five
-seconds; a caller disconnect does not cancel the shared probe. Worker scan
-status and failures are shown privately. Logs intentionally omit request URLs,
-feedback bodies, credentials and upstream response bodies. Configure ingress and
-observability to redact the secret path and request bodies too.
+App and bucket: `darron-fbhook`. Region: `yyz`. Admin: `darron`.
+URL: [darron-fbhook.fly.dev](https://darron-fbhook.fly.dev).
+GitHub target: `darron/fbhook`. Linear team: `fbhook` (`FBH`).
+The configured GitHub PAT expires **2026-12-02**; replace it before expiry.
 
-Intake allows 120 authenticated requests per endpoint and 600 globally per minute.
-Malformed or invalid credentials do not spend these quotas, and per-endpoint
-denials do not spend another endpoint's global capacity. Authentication has a
-separate cap of 16 concurrent storage lookups and never reads a request body.
-Only authenticated, admitted requests read bodies: at most four per endpoint and
-16 globally can read bodies or persist submissions concurrently; excess work
-receives `429`. A stalled body on one credential cannot fill every intake slot.
-No forwarded client-IP headers are trusted. Put abuse controls at a trusted ingress
-if you need source-IP filtering or a per-source request budget: guessed credentials
-with a valid shape can still cause bounded concurrent authentication reads.
+Reusable test URLs are in `/Users/darron/src/fbhook/.integration-endpoints.local`
+(JSON; owner-only permissions; Git-ignored and excluded from Docker builds).
+**Resume those endpoints for an authorized test; pause them afterward.** Reuse the
+URLs rather than generating new endpoints. Never print or commit their contents.
 
-Submission lists and page bootstrap return summaries, with application names
-limited to 200 characters. Full feedback, context and delivery history are fetched
-only when opening a submission. The stored payload is unchanged.
+Live creation passed on 2026-11-03 in one attempt per provider:
+[GitHub #5](https://github.com/darron/fbhook/issues/5) and
+[Linear FBH-2](https://linear.app/froese/issue/FBH-2/fbhook-pr-4-linear-delivery-verification-pr4-adddaa3-2026-11-03t20-23).
+Identical intake replays returned the same receipt; changed content returned `409`.
 
-## Destination setup
+## Verify storage
 
-Sign in, create a destination, and supply an issue-writing credential. Credentials
-are encrypted with AES-256-GCM using `FBHOOK_ENCRYPTION_KEY`; they are never returned
-by the admin API. Keep this key backed up separately: losing it prevents decrypting
-the stored credentials. Rotating the session key invalidates sessions; changing
-the encryption key requires an explicit credential migration/re-entry procedure.
+Use a bucket with conditional create/replace, coherent reads and complete paginated
+listing. Check the [Tigris consistency requirements](https://www.tigrisdata.com/docs/objects/conditionals/)
+for your bucket type and region before choosing a deployment topology.
 
-GitHub: fine-grained PAT scoped to the selected repository, Issues read/write and
-repository metadata read. Use `owner/repository` and existing label names. Issues
-must be enabled. Configured labels require repository push permission; creation
-and reconciliation verify they were applied. If GitHub creates an issue but drops
-a label, its reference is retained as a failed delivery and retry is blocked.
-Correct its labels upstream, then verify and link the existing issue. Token rotation
-uses the same destination/credential identity.
-
-Linear: personal API key with permission to read the selected team, labels and
-project and to create issues. Use the team's UUID; labels and optional project are
-UUIDs, not display names. The adapter validates their team relationship before
-saving. Provider credentials are independent of GitHub login credentials.
-
-Create an endpoint and copy the one-time full URL into your application's backend
-secret store. Each endpoint routes to one destination. Applications sharing a URL
-identify themselves through `source.app`; these fields are caller-supplied context,
-not verified identities. Labels belong to the destination configuration. Pausing
-an endpoint stops new intake; accepted work keeps its captured routing. Rotation
-revokes the old URL immediately, including old-key idempotent retries.
-
-Destination updates create a revision under `destination-revisions/`. Legacy
-revisions under `destinations/<id>/revisions/` remain readable as stored history
-and are skipped when filling destination list pages; no migration is required.
-Accepted work captures its destination,
-labels and rendered issue; later routing edits do not move it. Credential rotation
-is deliberately read at delivery time, so queued work can use a replacement token.
-Disabling a credential blocks delivery and makes affected pending work failed;
-re-enable then retry those records in the admin. Missing or unreadable credentials
-also fail delivery. Transient credential-storage errors leave work pending and
-report an incomplete worker scan, so the next pass can recover automatically.
-Configuration writes span separate
-objects; a failed save can leave an unused revision or a rotated credential. Inspect
-and retry configuration after an error rather than assuming a multi-object transaction.
-
-## Durable delivery and recovery
-
-Successful intake creates the complete submission, captured routing and pending
-work in one conditional object write. An idempotency-key digest determines the
-record key; concurrent submissions with identical bytes resolve to one receipt.
-
-The worker writes `delivering` before calling the provider. Definite rate-limit
-failures retry with bounded exponential backoff and jitter, honoring provider delay
-hints. Automatic attempts stop at ten. Timeouts, lost responses, malformed success
-responses and ambiguous upstream errors become `delivery_uncertain`. An unfinished
-`delivering` record becomes uncertain on the next serial scan, including after
-restart. A failed success-state write never triggers another automatic creation.
-
-There is no distributed exactly-once guarantee across object storage and external
-issue APIs. An uncertain record is never automatically created again. The worker
-can positively find its marker in an existing target issue; an absent search result
-never justifies recreation. Reconciliation has a 30-second deadline and a persisted
-exponential backoff with jitter (up to 15 minutes for the default local schedule),
-honoring longer provider retry hints. A restart retains that schedule. Unknown
-Linear GraphQL errors remain uncertain even when the mutation result is null:
-that alone does not prove creation had no side effects.
-In the private submission panel:
-
-1. Link an existing issue by its provider ID; the server verifies target, marker,
-   and captured labels. Linear label verification follows pagination as needed.
-2. Retry after checking upstream state. Uncertain retry requires an explicit
-   duplicate-risk acknowledgement and a reason.
-3. Abandon delivery with a reason. This retains feedback and history and stops
-   automatic work. It does not prove a previously uncertain creation failed:
-   linking remains available and any later retry still requires duplicate-risk
-   acknowledgement. A durable uncertainty flag survives history truncation.
-   Older records recover that flag from retained uncertainty events; already
-   discarded legacy history cannot be reconstructed.
-
-Actions record the administrator's stable GitHub ID. The latest 20 events plus a
-total event count are retained. Manual retry resets the automatic-attempt budget
-and keeps lifetime attempts. There is no automatic deletion/retention policy.
-Back up the object prefix and encryption/session keys according to your needs.
-
-Full scans are paginated and repeated, so inserts before a cursor are discovered
-on a later pass. The queue has no non-durable index dependency. This trades read
-cost/latency at large history sizes for a simple recoverable implementation.
-
-## Tigris contract verification
-
-Conditional create (`If-None-Match: *`), compare-and-swap (`If-Match` with an opaque
-ETag), read-after-write and consistent listing are required. The AWS SDK's write
-retries are disabled so ambiguous writes are resolved by the application. Use a Single-region or Multi-region bucket for globally strong preconditions, as
-described in [Tigris conditional operations](https://www.tigrisdata.com/docs/objects/conditionals/).
-Global and Dual-region buckets provide that guarantee only within a region.
-Keep the application in one region; S3-compatible syntax alone does not prove
-the required storage semantics.
-
-The local test suite exercises the adapter's actual HTTP protocol and shared
-storage contract with memory. To verify your real test bucket, inject its credentials
-and explicitly run:
+With test-bucket credentials injected, run:
 
 ```sh
 FBHOOK_TEST_TIGRIS=1 go test -run TestLiveContract -count=1 -v ./storage/tigris
 ```
 
-This writes test objects in a random `fbhook-contract/<timestamp>/` prefix and
-prints that prefix. It intentionally does not delete objects; inspect and remove
-that test prefix through your normal storage tools. Never use a bucket where
-these writes are unwanted. Repeat the storage and provider verification for a
-different installation or provider account before relying on its delivery.
+This writes and retains objects under a random `fbhook-contract/<timestamp>/`
+prefix. The test prints that prefix; remove it later with your storage tools.
 
-## Fly deployment
+## Publish a release
 
-Use a dedicated Fly app. `fly.toml` configures the Dockerfile, region, graceful
-shutdown, readiness check and native rolling deployment. It disables autostop and
-autostart so the background worker stays running. Install secrets before the first
-deployment and set the canonical HTTPS base URL and OAuth callback. The configured
-region defaults to `yyz`; choose the bucket's suitable region.
+1. Update `Version` in `feedback.go` and move changelog entries into a dated release.
+2. Wait for CI, then publish a stable GitHub release tagged `vMAJOR.MINOR.PATCH`.
+3. Check the **Release binaries** workflow and its four macOS/Linux amd64/arm64 archives.
+4. Verify `SHA256SUMS`, version metadata and native execution before reporting success.
+5. Check the Homebrew update separately if using the tap.
 
-Deploy directly with the Fly CLI from the repository root:
-
-```sh
-fly deploy --app YOUR_APP --ha=false
-```
-
-Alternatively, add your application name as the top-level `app` value in
-`fly.toml`, then run `fly deploy --ha=false`. The flag avoids creating a spare
-machine on the initial deployment. Keep this application scaled to **one machine
-in one region**; if using an existing app, check `fly machine list --app YOUR_APP`
-and reconcile its scale before deploying. `min_machines_running = 1` is a minimum,
-not a replica-count limit.
-
-The rolling strategy replaces the existing machine, with temporary downtime for
-this single-worker service, and retains Fly's deployment health checks. Do not
-switch this version to canary/bluegreen rollouts or add worker replicas: those
-can introduce overlapping workers. See [Fly's deployment strategy configuration](https://docs.fly.io/reference/configuration#picking-a-deployment-strategy).
-Inspect deployment problems using `fly status`, `fly checks list` and `fly logs`.
-A plain local deployment leaves build identity metadata unknown; the GitHub
-workflow supplies the checked source revision and clean build state.
-
-The GitHub **Deploy to Fly** workflow is manual and restricted to `main`, uses the `production`
-environment, serializes deployments for each app, checks source identity, and calls
-`fly deploy` directly. Configure `FLY_API_TOKEN` as an app-scoped deploy token stored
-only in the `production` environment. Restrict that environment's deployment
-branches to `main` in GitHub settings; the workflow guard alone does not protect
-against a writer who changes the workflow. No push-triggered live deployment,
-Fly resource provisioning or custom deployment wrapper is used.
-
-## CI, releases and Homebrew
-
-CI uses immutable action SHAs, Go 1.27.3, a Go 1.26 minimum check, Linux/macOS,
-race detection, vet, golangci-lint 2.15.0, govulncheck 1.9.0, bounded parser fuzzing,
-frontend type checks/build and Chromium smoke tests. Browser fixtures use signed
-test sessions and test-only providers; no production bypass exists.
-
-For a stable `vMAJOR.MINOR.PATCH` release, update the root `Version` constant and
-publish a GitHub release for that tag after CI passes. The release workflow resolves
-an immutable source SHA, requires a clean matching checkout, tests it, builds
-Darwin/Linux amd64/arm64 archives, embeds source/version metadata, generates four
-individual SHA-256 sidecars and `SHA256SUMS`, and smoke tests native Linux/macOS.
-Publication runs in a fresh job with Contents write permission and executes no
-release binaries. Existing assets must be byte-identical; replacements are refused.
-The manual backfill workflow accepts only published stable tags and runs from main.
-
-Homebrew automation verifies published hashes and writes `Formula/fbhook.rb` in
-`darron/homebrew-tap`. Set `HOMEBREW_TAP_TOKEN` to a fine-grained token with Contents
-read/write on that tap only. A missing token fails that optional post-publication
-job; release assets are already published. Existing identical formulas are no-ops;
-downgrades are refused. The tap workflow can be rerun independently.
-
-The npm dependency audit currently reports two low-severity, development-only
-findings via the Vite Svelte plugin's `deepmerge` dependency with no fixed upstream
-version. No npm packages execute in the Go runtime. Build only trusted frontend
-source/configuration; re-run audits when updating dependencies. No project license
-has been selected yet; choose one before publishing for third-party reuse.
+Assets are immutable: an existing asset must be byte-identical. **Update Homebrew**
+verifies published hashes and requires `HOMEBREW_TAP_TOKEN` with Contents read/write
+on `darron/homebrew-tap`. That job can be rerun independently after publication.
+Choose a project license before publishing for third-party reuse.
