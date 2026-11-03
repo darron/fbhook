@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Pass strict Homebrew audits while retaining protection against formula downgrades.
+
 ## 0.1.0 — 2026-11-03
 
 ### Added
