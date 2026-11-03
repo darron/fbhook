@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestValidateCreateAndVerifyMarker(t *testing.T) {
@@ -63,6 +64,20 @@ func TestServerFailureIsUncertain(t *testing.T) {
 	var pe *service.ProviderError
 	if !errors.As(e, &pe) || !pe.Uncertain {
 		t.Fatalf("unsafe error %v", e)
+	}
+}
+
+func TestSecondaryRateLimitSchedulesRetry(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("X-RateLimit-Remaining", "4000")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	_, err := New(srv.Client(), srv.URL).Create(t.Context(), service.Destination{Target: "o/r"}, "fixture", service.Issue{})
+	var pe *service.ProviderError
+	if !errors.As(err, &pe) || !pe.Retryable || pe.Uncertain || pe.RetryAfter != time.Minute {
+		t.Fatalf("secondary rate limit became a permanent or uncertain failure: %v", err)
 	}
 }
 

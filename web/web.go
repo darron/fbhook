@@ -29,18 +29,22 @@ type Options struct {
 	GitHubAPI                                 string
 }
 type Server struct {
-	service *service.Service
-	options Options
-	allowed []string
-	codec   *securecookie.SecureCookie
-	oauth   oauth2.Config
-	http    *http.Client
-	secure  bool
-	mux     *http.ServeMux
-	limitMu sync.Mutex
-	window  time.Time
-	global  int
-	counts  map[string]int
+	service      *service.Service
+	options      Options
+	allowed      []string
+	codec        *securecookie.SecureCookie
+	oauth        oauth2.Config
+	http         *http.Client
+	secure       bool
+	mux          *http.ServeMux
+	limitMu      sync.Mutex
+	window       time.Time
+	global       int
+	counts       map[string]int
+	intakeSlots  chan struct{}
+	readyMu      sync.Mutex
+	readyChecked time.Time
+	readyError   error
 }
 
 func New(s *service.Service, o Options) (*Server, error) {
@@ -78,7 +82,7 @@ func New(s *service.Service, o Options) (*Server, error) {
 	codec := securecookie.New(o.SessionKey[:32], o.SessionKey[32:])
 	codec.MaxAge(8 * 60 * 60)
 	codec.MaxLength(4096)
-	app := &Server{service: s, options: o, allowed: allowed, codec: codec, http: &hc, secure: u.Scheme == "https", mux: http.NewServeMux(), counts: map[string]int{}}
+	app := &Server{service: s, options: o, allowed: allowed, codec: codec, http: &hc, secure: u.Scheme == "https", mux: http.NewServeMux(), counts: map[string]int{}, intakeSlots: make(chan struct{}, 16)}
 	app.oauth = oauth2.Config{ClientID: o.OAuthClientID, ClientSecret: o.OAuthClientSecret, RedirectURL: strings.TrimRight(o.BaseURL, "/") + "/auth/callback", Scopes: []string{"read:user"}, Endpoint: o.OAuthEndpoint}
 	app.routes()
 	return app, nil
@@ -86,9 +90,7 @@ func New(s *service.Service, o Options) (*Server, error) {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { respond(w, 200, map[string]string{"status": "alive"}) })
 	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		if s.service.Ready(ctx) != nil {
+		if s.ready(r.Context()) != nil {
 			respond(w, 503, map[string]string{"status": "unavailable"})
 			return
 		}
@@ -105,6 +107,20 @@ func (s *Server) routes() {
 	}
 	s.mux.HandleFunc("GET /login.css", loginCSS)
 	s.mux.HandleFunc("GET /{$}", s.landing)
+}
+
+func (s *Server) ready(ctx context.Context) error {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if !s.readyChecked.IsZero() && time.Since(s.readyChecked) < 5*time.Second {
+		return s.readyError
+	}
+	// A caller disconnect must not poison the shared result with its cancellation.
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	s.readyError = s.service.Ready(probeCtx)
+	s.readyChecked = time.Now()
+	return s.readyError
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -151,10 +167,19 @@ func (s *Server) intake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	credential := r.PathValue("credential")
-	id, _, _ := strings.Cut(credential, ".")
-	if !s.admit(id) {
-		w.Header().Set("Retry-After", "60")
-		respond(w, 429, map[string]string{"error": "feedback rate limit reached"})
+	id, secret, ok := strings.Cut(credential, ".")
+	if !ok || !service.ValidID(id) || len(secret) != 43 {
+		respond(w, 404, map[string]string{"error": "feedback endpoint unavailable"})
+		return
+	}
+	// Bound unauthenticated work without letting bad credentials spend a valid
+	// endpoint's minute-long quota. No forwarded IP headers are trusted here.
+	select {
+	case s.intakeSlots <- struct{}{}:
+		defer func() { <-s.intakeSlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		respond(w, 429, map[string]string{"error": "feedback intake busy"})
 		return
 	}
 	body, e := io.ReadAll(http.MaxBytesReader(w, r.Body, fbhook.MaxRequestBytes))
@@ -162,8 +187,11 @@ func (s *Server) intake(w http.ResponseWriter, r *http.Request) {
 		respond(w, 413, map[string]string{"error": "feedback request exceeds 64 KiB"})
 		return
 	}
-	receipt, e := s.service.Accept(r.Context(), credential, body, r.Header.Get("Idempotency-Key"))
+	receipt, e := s.service.AcceptWithAdmission(r.Context(), credential, body, r.Header.Get("Idempotency-Key"), s.admit)
 	if e != nil {
+		if service.ErrorStatus(e) == 429 {
+			w.Header().Set("Retry-After", "60")
+		}
 		failure(w, e)
 		return
 	}
@@ -178,13 +206,10 @@ func (s *Server) admit(id string) bool {
 		s.global = 0
 		s.counts = map[string]int{}
 	}
-	if s.global >= 600 {
+	if s.global >= 600 || s.counts[id] >= 120 {
 		return false
 	}
 	s.global++
-	if s.counts[id] >= 120 {
-		return false
-	}
 	s.counts[id]++
 	return true
 }

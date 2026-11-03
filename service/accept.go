@@ -12,10 +12,20 @@ import (
 
 func submissionKey(ep, id string) string { return "submissions/" + ep + "/" + id + ".json" }
 func (s *Service) Accept(ctx context.Context, credential string, body []byte, key string) (fbhook.Receipt, error) {
+	return s.AcceptWithAdmission(ctx, credential, body, key, nil)
+}
+
+// AcceptWithAdmission checks the credential before charging an optional intake
+// budget. The callback receives an authenticated endpoint ID, never caller input.
+// Returning false rejects the request without storing a submission.
+func (s *Service) AcceptWithAdmission(ctx context.Context, credential string, body []byte, key string, admit func(string) bool) (fbhook.Receipt, error) {
 	var receipt fbhook.Receipt
 	ep, e := s.authenticate(ctx, credential)
 	if e != nil {
 		return receipt, e
+	}
+	if admit != nil && !admit(ep.ID) {
+		return receipt, problem(429, "feedback rate limit reached")
 	}
 	f, e := fbhook.Parse(body)
 	if e != nil {

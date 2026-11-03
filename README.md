@@ -102,7 +102,10 @@ URLs contain 256-bit random secrets; the server stores SHA-256 digests. The URL
 is a credential: proxy it through your application's backend, keep it out of
 browser bundles and access logs, and rotate it when exposed. A shared URL shares
 revocation and rate limits across its applications. Intake limits are 120 per
-endpoint and 600 globally per minute, per process.
+endpoint and 600 globally per minute, per process, charged after credential
+verification. Unauthenticated traffic cannot spend these quotas. Concurrent
+intake work is capped at 16 requests. The SDK and storage adapter require HTTPS
+outside loopback development.
 
 ## Development and delivery
 

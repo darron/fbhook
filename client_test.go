@@ -37,6 +37,19 @@ func TestClientSubmitAndRedactedError(t *testing.T) {
 
 type transportFunc func(*http.Request) (*http.Response, error)
 
+func TestClientRejectsRemotePlaintextEndpoints(t *testing.T) {
+	for _, origin := range []string{"http://example.com", "http://localhost.example.com", "http://127.0.0.1.example.com", "http://0.0.0.0"} {
+		if _, err := NewClient(origin+"/api/v1/feedback/id.secret", nil); err == nil {
+			t.Errorf("accepted credential-bearing endpoint over plaintext: %s", origin)
+		}
+	}
+	for _, origin := range []string{"https://example.com", "http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080"} {
+		if _, err := NewClient(origin+"/api/v1/feedback/id.secret", nil); err != nil {
+			t.Errorf("rejected secure or loopback endpoint %s: %v", origin, err)
+		}
+	}
+}
+
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 type lostReceiptBody struct{}

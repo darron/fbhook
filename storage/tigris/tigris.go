@@ -43,6 +43,10 @@ func New(_ context.Context, c Config) (*Store, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || c.Bucket == "" || c.AccessKeyID == "" || c.SecretAccessKey == "" {
 		return nil, errors.New("tigris endpoint, bucket and credentials are required")
 	}
+	loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+	if u.Scheme != "https" && !loopback {
+		return nil, errors.New("storage endpoint must use HTTPS (HTTP is allowed only on loopback)")
+	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = &http.Client{Timeout: 20 * time.Second}
 	}

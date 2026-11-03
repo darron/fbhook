@@ -64,3 +64,17 @@ func TestLiveContract(t *testing.T) {
 	t.Log("test objects retained under", c.Prefix)
 	contract.Run(t, s)
 }
+
+func TestRejectsRemotePlaintextStorage(t *testing.T) {
+	for _, endpoint := range []string{"http://storage.example.com", "http://localhost.example.com", "http://0.0.0.0"} {
+		_, err := New(t.Context(), Config{Endpoint: endpoint, Bucket: "fixture", AccessKeyID: "fixture", SecretAccessKey: "fixture"})
+		if err == nil {
+			t.Errorf("accepted plaintext storage: %s", endpoint)
+		}
+	}
+	for _, endpoint := range []string{"https://t3.storage.dev", "http://localhost:9000", "http://127.0.0.1:9000", "http://[::1]:9000"} {
+		if _, err := New(t.Context(), Config{Endpoint: endpoint, Bucket: "fixture", AccessKeyID: "fixture", SecretAccessKey: "fixture"}); err != nil {
+			t.Errorf("rejected secure or loopback storage %s: %v", endpoint, err)
+		}
+	}
+}
