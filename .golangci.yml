@@ -1,0 +1,25 @@
+version: "2"
+run:
+  timeout: 5m
+  tests: true
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - durationcheck
+    - errorlint
+    - gosec
+    - nilerr
+    - noctx
+  settings:
+    gosec:
+      excludes:
+        # Outbound URLs are configured by the operator, or fixed provider APIs.
+        - G704
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+  exclusions:
+    presets: []
+formatters:
+  enable: [gofmt]

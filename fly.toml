@@ -1,0 +1,39 @@
+app = "darron-fbhook"
+primary_region = "yyz"
+kill_signal = "SIGTERM"
+kill_timeout = 30
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "rolling"
+  max_unavailable = 1
+
+[env]
+  FBHOOK_BASE_URL = "https://darron-fbhook.fly.dev"
+  FBHOOK_GITHUB_USERS = "darron"
+  FBHOOK_POLL_INTERVAL = "15s"
+  AWS_REGION = "auto"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 80
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/readyz"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"

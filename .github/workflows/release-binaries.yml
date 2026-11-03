@@ -1,0 +1,116 @@
+name: Release binaries
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published stable release tag
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && !github.event.release.prerelease && !github.event.release.draft)
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      revision: ${{ steps.resolve.outputs.revision }}
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: automation
+          persist-credentials: false
+      - name: Resolve immutable source revision
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          RELEASE_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          revision=$(gh api "repos/$RELEASE_REPO/commits/$RELEASE_TAG" --jq .sha)
+          [[ "$revision" =~ ^[a-f0-9]{40}$ ]]
+          printf 'tag=%s\nrevision=%s\n' "$RELEASE_TAG" "$revision" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.resolve.outputs.revision }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: 1.27.3
+          cache-dependency-path: source/go.sum
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 26.13.0
+      - name: Install pinned lint tool
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
+      - name: Test and package with no publishing credentials
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+          RELEASE_REVISION: ${{ steps.resolve.outputs.revision }}
+        run: |
+          make -C source check
+          python3 automation/scripts/release_artifacts.py build --source source --output release-assets --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
+  macos-smoke:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Verify native macOS archive and version
+        env:
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_REVISION: ${{ needs.build.outputs.revision }}
+        run: |
+          cd release-assets
+          shasum -a 256 -c SHA256SUMS
+          arch=$(uname -m)
+          if [ "$arch" = x86_64 ]; then arch=amd64; fi
+          tar -xzf "fbhook_${RELEASE_TAG#v}_darwin_${arch}.tar.gz"
+          test "$(./fbhook version)" = "fbhook ${RELEASE_TAG#v} sha=$RELEASE_REVISION clean"
+          ./fbhook help
+  publish:
+    needs: [build, macos-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Publish immutable verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+          RELEASE_REVISION: ${{ needs.build.outputs.revision }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: python3 scripts/release_artifacts.py publish --output release-assets --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --repo "$RELEASE_REPO"
+  homebrew:
+    needs: [build, publish]
+    uses: ./.github/workflows/update-homebrew.yml
+    with:
+      tag: ${{ needs.build.outputs.tag }}
+    secrets:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

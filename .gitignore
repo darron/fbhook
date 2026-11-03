@@ -1,0 +1,12 @@
+/bin/
+/dist/
+/.superpowers/
+/.worktrees/
+node_modules/
+web/ui/dist/*
+!web/ui/dist/README.txt
+.env
+*.local
+__pycache__/
+*.pyc
+/artifacts/

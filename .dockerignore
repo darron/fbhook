@@ -1,0 +1,10 @@
+.git
+.superpowers
+.worktrees
+bin
+dist
+artifacts
+web/ui/node_modules
+web/ui/dist
+.env
+*.local
