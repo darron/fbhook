@@ -1,0 +1,5 @@
+export type Endpoint = { id:string;name:string;destination_id:string;disabled:boolean;created_at:string };
+export type Destination = { id:string;name:string;provider:string;target:string;project?:string;labels:string[];credential_id:string };
+export type Status = { last_scan:string;last_error?:string;scanned:number;pending:number;uncertain:number;oldest_pending?:string };
+export type Submission = { context_json:string; id:string;endpoint_id:string;feedback:{title:string;feedback:string;source?:{app?:string;version?:string;environment?:string;actor?:string};context?:unknown};destination:Destination;state:string;created_at:string;updated_at:string;total_attempts:number;error?:string;reference?:{id:string;url:string};history:{at:string;to:string;actor?:string;reason?:string}[] };
+export type Bootstrap = { page:string;user:{id:string;login:string};csrfToken:string;data:{endpoints:Endpoint[];destinations:Destination[];submissions?:Submission[];endpointCursor:string;destinationCursor:string;submissionCursor?:string;status:Status} };
