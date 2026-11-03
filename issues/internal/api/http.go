@@ -50,7 +50,7 @@ func Call(ctx context.Context, client *http.Client, method, url, auth string, pa
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		pe := &service.ProviderError{Kind: "request_rejected", Uncertain: creation && (res.StatusCode >= 500 || res.StatusCode == 408)}
-		if res.StatusCode == 429 || (res.StatusCode == 403 && res.Header.Get("X-RateLimit-Remaining") == "0") {
+		if res.StatusCode == 429 || (res.StatusCode == 403 && (res.Header.Get("X-RateLimit-Remaining") == "0" || res.Header.Get("Retry-After") != "")) {
 			pe.Kind = "rate_limited"
 			pe.Retryable = true
 			pe.Uncertain = false

@@ -31,6 +31,10 @@ func NewClient(endpoint string, client *http.Client) (*Client, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || !strings.HasPrefix(u.Path, "/api/v1/feedback/") {
 		return nil, errors.New("invalid feedback endpoint")
 	}
+	loopback := u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"
+	if u.Scheme != "https" && !loopback {
+		return nil, errors.New("feedback endpoint must use HTTPS (HTTP is allowed only on loopback)")
+	}
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}

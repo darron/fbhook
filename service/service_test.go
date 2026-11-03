@@ -382,3 +382,214 @@ func TestCreatedIssueMissingDefaultsCannotBeRecreated(t *testing.T) {
 		t.Fatal(sub.State)
 	}
 }
+
+type reconcileProvider struct {
+	fixtureProvider
+	finds     int
+	deadline  bool
+	confirmed bool
+}
+
+func (p *reconcileProvider) Find(ctx context.Context, _ Destination, _ string, _ Issue, _ string) (IssueRef, error) {
+	p.finds++
+	_, p.deadline = ctx.Deadline()
+	if p.confirmed {
+		return IssueRef{ID: "42", URL: "https://github.com/example/repo/issues/42"}, nil
+	}
+	return IssueRef{}, &ProviderError{Kind: "rate_limited", Retryable: true, RetryAfter: time.Minute}
+}
+
+func TestUncertainReconciliationBacksOffAndBoundsProviderCall(t *testing.T) {
+	store := memory.New()
+	s, _, ep, credential := setup(t, store)
+	p := &reconcileProvider{fixtureProvider: fixtureProvider{fail: &ProviderError{Kind: "transport", Uncertain: true}}}
+	s.options.Providers["github"] = p
+	now := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	s.options.Clock = func() time.Time { return now }
+	receipt, err := s.Accept(t.Context(), credential, []byte(`{"feedback":"uncertain"}`), "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := s.Scan(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p.finds != 1 || !p.deadline {
+		t.Fatalf("unbounded or repeated reconciliation: finds=%d deadline=%v", p.finds, p.deadline)
+	}
+	sub, _, err := s.GetSubmission(t.Context(), ep, receipt.ID)
+	if err != nil || sub.NextAttempt.Before(now.Add(time.Minute)) {
+		t.Fatalf("provider retry hint not persisted: %+v %v", sub, err)
+	}
+	// A restarted worker must respect the persisted schedule too.
+	restarted, err := New(store, s.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.Scan(t.Context(), true); err != nil || p.finds != 1 {
+		t.Fatalf("restart bypassed backoff: finds=%d %v", p.finds, err)
+	}
+	now = sub.NextAttempt.Add(time.Second)
+	p.confirmed = true
+	if err = restarted.Scan(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	sub, _, _ = s.GetSubmission(t.Context(), ep, receipt.ID)
+	if sub.State != "delivered" || p.finds != 2 || p.calls != 1 {
+		t.Fatalf("reconciliation lost or duplicated creation: state=%s finds=%d creates=%d", sub.State, p.finds, p.calls)
+	}
+}
+
+type credentialReadFault struct {
+	storage.Store
+	failure error
+}
+
+func (s *credentialReadFault) Get(ctx context.Context, key string) (storage.Object, error) {
+	if s.failure != nil && strings.HasPrefix(key, "credentials/") {
+		return storage.Object{}, s.failure
+	}
+	return s.Store.Get(ctx, key)
+}
+
+func TestTransientCredentialReadDoesNotPermanentlyFailPendingDelivery(t *testing.T) {
+	store := &credentialReadFault{Store: memory.New()}
+	s, p, ep, credential := setup(t, store)
+	receipt, err := s.Accept(t.Context(), credential, []byte(`{"feedback":"transient"}`), "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.failure = errors.New("temporary credential read failure")
+	if err = s.Scan(t.Context(), true); err == nil {
+		t.Fatal("transient storage outage not surfaced in worker status")
+	}
+	sub, _, _ := s.GetSubmission(t.Context(), ep, receipt.ID)
+	if sub.State != "pending" || sub.Attempts != 0 || p.calls != 0 {
+		t.Fatalf("transient read permanently failed delivery: state=%s attempts=%d calls=%d", sub.State, sub.Attempts, p.calls)
+	}
+	store.failure = nil
+	if err = s.Scan(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	sub, _, _ = s.GetSubmission(t.Context(), ep, receipt.ID)
+	if sub.State != "delivered" || p.calls != 1 {
+		t.Fatalf("pending delivery did not recover: state=%s calls=%d", sub.State, p.calls)
+	}
+}
+
+func TestDestinationListingSkipsLegacyRevisionPages(t *testing.T) {
+	store := memory.New()
+	s, _, _, _ := setup(t, store)
+	destinations, _, err := s.ListDestinations(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := destinations[0]
+	other, err := s.SaveDestination(t.Context(), DestinationInput{Name: "Other", Provider: "github", Target: "example/other", Token: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := min(d.ID, other.ID)
+	for i := 0; i < 150; i++ {
+		if _, err = store.Create(t.Context(), fmt.Sprintf("destinations/%s/revisions/%024x.json", first, i), []byte(`{"schema":1}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 150; i++ {
+		if _, err = s.SaveDestination(t.Context(), DestinationInput{ID: d.ID, Name: "Edited", Provider: d.Provider, Target: d.Target}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, cursor, err := s.ListDestinations(t.Context(), "")
+	if err != nil || cursor != "" || len(items) != 2 {
+		t.Fatalf("revisions crowded destinations out: items=%d cursor=%q err=%v", len(items), cursor, err)
+	}
+}
+
+func TestMissingDisabledAndUnreadableCredentialsStillFailDelivery(t *testing.T) {
+	for _, kind := range []string{"missing", "disabled", "invalid-json", "bad-ciphertext"} {
+		t.Run(kind, func(t *testing.T) {
+			store := &credentialReadFault{Store: memory.New()}
+			s, p, ep, secret := setup(t, store)
+			receipt, err := s.Accept(t.Context(), secret, []byte(`{"feedback":"credential unavailable"}`), "one")
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint, _, _ := s.GetEndpoint(t.Context(), ep)
+			switch kind {
+			case "missing":
+				store.failure = storage.ErrNotFound
+			case "disabled":
+				if err := s.SetCredentialDisabled(t.Context(), endpoint.DestinationID, true); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				key := "credentials/" + endpoint.DestinationID + ".json"
+				object, err := store.Get(t.Context(), key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := []byte(`not JSON`)
+				if kind == "bad-ciphertext" {
+					body = []byte(`{"schema":1,"ciphertext":"AA=="}`)
+				}
+				if _, err := store.Replace(t.Context(), key, body, object.Version); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			sub, _, _ := s.GetSubmission(t.Context(), ep, receipt.ID)
+			if sub.State != "failed" || sub.Attempts != 0 || p.calls != 0 {
+				t.Fatalf("unavailable credential reached provider or remained pending: state=%s attempts=%d calls=%d", sub.State, sub.Attempts, p.calls)
+			}
+		})
+	}
+}
+
+func TestUncertainReconciliationBacksOffWhenDependenciesUnavailable(t *testing.T) {
+	for _, kind := range []string{"credential-store", "provider"} {
+		t.Run(kind, func(t *testing.T) {
+			store := &credentialReadFault{Store: memory.New()}
+			s, _, ep, credential := setup(t, store)
+			p := &reconcileProvider{fixtureProvider: fixtureProvider{fail: &ProviderError{Kind: "transport", Uncertain: true}}, confirmed: true}
+			s.options.Providers["github"] = p
+			now := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+			s.options.Clock = func() time.Time { return now }
+			receipt, err := s.Accept(t.Context(), credential, []byte(`{"feedback":"uncertain dependency"}`), "one")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "credential-store" {
+				store.failure = errors.New("temporary store outage")
+			} else {
+				delete(s.options.Providers, "github")
+			}
+			if err = s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			sub, _, err := s.GetSubmission(t.Context(), ep, receipt.ID)
+			if err != nil || sub.State != "delivery_uncertain" || !sub.NextAttempt.After(now) || p.finds != 0 {
+				t.Fatalf("unavailable dependency bypassed schedule: state=%s next=%v finds=%d err=%v", sub.State, sub.NextAttempt, p.finds, err)
+			}
+			store.failure = nil
+			s.options.Providers["github"] = p
+			if err = s.Scan(t.Context(), true); err != nil || p.finds != 0 {
+				t.Fatalf("dependency recovery bypassed backoff: finds=%d err=%v", p.finds, err)
+			}
+			now = sub.NextAttempt.Add(time.Second)
+			if err = s.Scan(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			sub, _, _ = s.GetSubmission(t.Context(), ep, receipt.ID)
+			if sub.State != "delivered" || p.finds != 1 || p.calls != 1 {
+				t.Fatalf("recovery duplicated creation or lost delivery: state=%s finds=%d creates=%d", sub.State, p.finds, p.calls)
+			}
+		})
+	}
+}

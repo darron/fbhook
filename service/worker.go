@@ -76,6 +76,8 @@ func (s *Service) Scan(ctx context.Context, recoverAttempts bool) (scanErr error
 				stats.Uncertain++
 				s.event(&sub, "delivery_uncertain", "worker", "unfinished external creation recovered")
 				sub.Error = "external creation outcome unknown"
+				sub.NextAttempt = time.Time{}
+				sub.ReconcileAttempts = 0
 				if _, e = writeJSON(ctx, s.store, key, sub, v); e != nil {
 					if first == nil {
 						first = e
@@ -85,21 +87,35 @@ func (s *Service) Scan(ctx context.Context, recoverAttempts bool) (scanErr error
 				continue
 			}
 			if sub.State == "delivery_uncertain" {
+				if sub.NextAttempt.After(s.now()) {
+					continue
+				}
 				// Positive reconciliation only. An absent search result never justifies a create.
 				p := s.options.Providers[sub.Destination.Provider]
 				token, e := s.token(ctx, sub.Destination.CredentialID)
-				if e != nil || p == nil {
-					continue
+				var ref IssueRef
+				if e == nil && p != nil {
+					callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					ref, e = p.Find(callCtx, sub.Destination, token, sub.Issue, "")
+					cancel()
 				}
-				ref, e := p.Find(ctx, sub.Destination, token, sub.Issue, "")
 				if e == nil && ref.ID != "" && ref.URL != "" {
 					sub.Reference = &ref
 					sub.Error = ""
 					s.event(&sub, "delivered", "worker", "existing issue confirmed")
-					_, e = writeJSON(ctx, s.store, key, sub, v)
-					if e != nil && first == nil {
-						first = e
+					sub.NextAttempt = time.Time{}
+				} else {
+					sub.ReconcileAttempts++
+					hint := time.Duration(0)
+					var pe *ProviderError
+					if errors.As(e, &pe) {
+						hint = pe.RetryAfter
 					}
+					sub.NextAttempt = s.now().Add(s.backoff(sub.ReconcileAttempts, hint))
+					sub.UpdatedAt = s.now()
+				}
+				if _, e = writeJSON(ctx, s.store, key, sub, v); e != nil && first == nil {
+					first = e
 				}
 				continue
 			}
@@ -123,6 +139,11 @@ func (s *Service) Scan(ctx context.Context, recoverAttempts bool) (scanErr error
 func (s *Service) deliver(ctx context.Context, key string, sub Submission, v string) error {
 	p := s.options.Providers[sub.Destination.Provider]
 	token, e := s.token(ctx, sub.Destination.CredentialID)
+	if e != nil && !errors.Is(e, errCredentialUnavailable) {
+		// No provider request happened. A transient store failure must not turn
+		// durable pending work into a permanent failure requiring manual retry.
+		return e
+	}
 	if e != nil || p == nil {
 		sub.Error = "destination credential or provider unavailable"
 		s.event(&sub, "failed", "worker", sub.Error)
@@ -130,6 +151,7 @@ func (s *Service) deliver(ctx context.Context, key string, sub Submission, v str
 		return e
 	}
 	sub.Attempts++
+	sub.ReconcileAttempts = 0
 	sub.TotalAttempts++
 	sub.AttemptID = newID()
 	sub.Error = ""

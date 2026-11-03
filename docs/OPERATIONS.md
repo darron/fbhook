@@ -83,16 +83,35 @@ To grant the newly named account explicitly, add the new username and let it bin
 before removing its old entry. Never silently edit an existing binding to another
 account; audit and explicitly remove an obsolete object binding during recovery.
 
-Run behind HTTPS. HTTP is accepted only for loopback development origins. Cookies
+Run behind HTTPS. The server origin, Go sender and Tigris adapter reject remote
+HTTP URLs; HTTP is accepted only for `localhost`, `127.0.0.1` or `::1` development.
+Cookies
 are HttpOnly, encrypted/signed, SameSite=Lax, and Secure outside local HTTP. Sessions
 expire after eight hours. Mutations require CSRF; private assets and every admin
 API route require authorization. There is no public submission read/status API.
 
 `fbhook serve --listen :8080` runs HTTP and one worker. `/healthz` checks the process;
-`/readyz` checks storage listing, not successful provider delivery. Worker scan
+`/readyz` checks storage listing, not successful provider delivery. Concurrent
+readiness checks share one probe, with both success and failure cached for five
+seconds; a caller disconnect does not cancel the shared probe. Worker scan
 status and failures are shown privately. Logs intentionally omit request URLs,
 feedback bodies, credentials and upstream response bodies. Configure ingress and
 observability to redact the secret path and request bodies too.
+
+Intake allows 120 authenticated requests per endpoint and 600 globally per minute.
+Malformed or invalid credentials do not spend these quotas, and per-endpoint
+denials do not spend another endpoint's global capacity. Authentication has a
+separate cap of 16 concurrent storage lookups and never reads a request body.
+Only authenticated, admitted requests read bodies: at most four per endpoint and
+16 globally can read bodies or persist submissions concurrently; excess work
+receives `429`. A stalled body on one credential cannot fill every intake slot.
+No forwarded client-IP headers are trusted. Put abuse controls at a trusted ingress
+if you need source-IP filtering or a per-source request budget: guessed credentials
+with a valid shape can still cause bounded concurrent authentication reads.
+
+Submission lists and page bootstrap return summaries, with application names
+limited to 200 characters. Full feedback, context and delivery history are fetched
+only when opening a submission. The stored payload is unchanged.
 
 ## Destination setup
 
@@ -122,11 +141,17 @@ not verified identities. Labels belong to the destination configuration. Pausing
 an endpoint stops new intake; accepted work keeps its captured routing. Rotation
 revokes the old URL immediately, including old-key idempotent retries.
 
-Destination updates create a revision. Accepted work captures its destination,
+Destination updates create a revision under `destination-revisions/`. Legacy
+revisions under `destinations/<id>/revisions/` remain readable as stored history
+and are skipped when filling destination list pages; no migration is required.
+Accepted work captures its destination,
 labels and rendered issue; later routing edits do not move it. Credential rotation
 is deliberately read at delivery time, so queued work can use a replacement token.
 Disabling a credential blocks delivery and makes affected pending work failed;
-re-enable then retry those records in the admin. Configuration writes span separate
+re-enable then retry those records in the admin. Missing or unreadable credentials
+also fail delivery. Transient credential-storage errors leave work pending and
+report an incomplete worker scan, so the next pass can recover automatically.
+Configuration writes span separate
 objects; a failed save can leave an unused revision or a rotated credential. Inspect
 and retry configuration after an error rather than assuming a multi-object transaction.
 
@@ -146,7 +171,12 @@ restart. A failed success-state write never triggers another automatic creation.
 There is no distributed exactly-once guarantee across object storage and external
 issue APIs. An uncertain record is never automatically created again. The worker
 can positively find its marker in an existing target issue; an absent search result
-never justifies recreation. In the private submission panel:
+never justifies recreation. Reconciliation has a 30-second deadline and a persisted
+exponential backoff with jitter (up to 15 minutes for the default local schedule),
+honoring longer provider retry hints. A restart retains that schedule. Unknown
+Linear GraphQL errors remain uncertain even when the mutation result is null:
+that alone does not prove creation had no side effects.
+In the private submission panel:
 
 1. Link an existing issue by its provider ID; the server verifies target and marker.
 2. Retry after checking upstream state. Uncertain retry requires an explicit
@@ -215,10 +245,12 @@ Inspect deployment problems using `fly status`, `fly checks list` and `fly logs`
 A plain local deployment leaves build identity metadata unknown; the GitHub
 workflow supplies the checked source revision and clean build state.
 
-The GitHub **Deploy to Fly** workflow is manual only, uses the `production`
+The GitHub **Deploy to Fly** workflow is manual and restricted to `main`, uses the `production`
 environment, serializes deployments for each app, checks source identity, and calls
-`fly deploy` directly. Configure `FLY_API_TOKEN` as an app-scoped deploy token.
-Add environment protection rules if desired. No push-triggered live deployment,
+`fly deploy` directly. Configure `FLY_API_TOKEN` as an app-scoped deploy token stored
+only in the `production` environment. Restrict that environment's deployment
+branches to `main` in GitHub settings; the workflow guard alone does not protect
+against a writer who changes the workflow. No push-triggered live deployment,
 Fly resource provisioning or custom deployment wrapper is used.
 
 ## CI, releases and Homebrew

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import type { Bootstrap, Endpoint, Destination, Submission, Status } from './lib/types';
+  import type { Bootstrap, Endpoint, Destination, Submission, SubmissionSummary, Status } from './lib/types';
   import { api, safeURL } from './lib/api';
   let { bootstrap }: { bootstrap:Bootstrap } = $props();
   const initial=untrack(()=>bootstrap);
@@ -9,7 +9,7 @@
   $effect(()=>{if(selected&&dialogElement&&!dialogElement.open)dialogElement.showModal();});
   let endpoints=$state<Endpoint[]>(initial.data.endpoints);
   let destinations=$state<Destination[]>(initial.data.destinations);
-  let submissions=$state<Submission[]>(initial.data.submissions || []);
+  let submissions=$state<SubmissionSummary[]>(initial.data.submissions || []);
   let status=$state<Status>(initial.data.status);
   let endpointCursor=$state(initial.data.endpointCursor);
   let destinationCursor=$state(initial.data.destinationCursor);
@@ -43,7 +43,7 @@
   async function credential(d:Destination,disabled:boolean){await action(async()=>{await api(`credentials/${d.credential_id}/status`,bootstrap.csrfToken,{disabled});notice=disabled?'Credential disabled. Pending deliveries will stop.':'Credential enabled.';});}
   async function loadMore(kind:'endpoints'|'destinations'|'submissions') {await action(async()=>{const cursor=kind==='endpoints'?endpointCursor:kind==='destinations'?destinationCursor:submissionCursor;const result=await api(`${kind}?cursor=${encodeURIComponent(cursor)}`,bootstrap.csrfToken);if(kind==='endpoints'){endpoints=[...endpoints,...result.items];endpointCursor=result.cursor;}else if(kind==='destinations'){destinations=[...destinations,...result.items];destinationCursor=result.cursor;}else{submissions=[...submissions,...result.items];submissionCursor=result.cursor;}});}
   async function resolve(kind:string){if(!selected)return;const sub=selected;await action(async()=>{await api(`submissions/${sub.endpoint_id}/${sub.id}/resolve`,bootstrap.csrfToken,{action:kind,reason,reference,acknowledge_duplicate:acknowledge});selected=await api(`submissions/${sub.endpoint_id}/${sub.id}`,bootstrap.csrfToken);await refresh();notice='Delivery state updated.';});}
-  function openSubmission(sub:Submission){selected=sub;reason='';reference=sub.reference?.id||'';acknowledge=false;}
+  async function openSubmission(sub:SubmissionSummary){await action(async()=>{const detail:Submission=await api(`submissions/${sub.endpoint_id}/${sub.id}`,bootstrap.csrfToken);selected=detail;reason='';reference=detail.reference?.id||'';acknowledge=false;});}
 </script>
 
 <div class="workspace">

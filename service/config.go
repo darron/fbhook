@@ -7,10 +7,17 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"github.com/darron/fbhook/storage"
 	"strings"
 )
+
+var errCredentialUnavailable = errors.New("credential unavailable")
+
+func unavailableCredential(message string) error {
+	return errors.Join(errCredentialUnavailable, problem(503, message))
+}
 
 func (s *Service) encrypt(id, token string) []byte {
 	nonce := make([]byte, s.aead.NonceSize())
@@ -18,17 +25,24 @@ func (s *Service) encrypt(id, token string) []byte {
 	return s.aead.Seal(nonce, nonce, []byte(token), []byte(id))
 }
 func (s *Service) token(ctx context.Context, id string) (string, error) {
-	c, _, e := readJSON[credential](ctx, s.store, "credentials/"+id+".json")
-	if e != nil || c.Disabled {
-		return "", problem(503, "destination credential unavailable")
+	o, e := s.store.Get(ctx, "credentials/"+id+".json")
+	if errors.Is(e, storage.ErrNotFound) {
+		return "", unavailableCredential("destination credential unavailable")
+	}
+	if e != nil {
+		return "", e
+	}
+	var c credential
+	if json.Unmarshal(o.Body, &c) != nil || c.Schema != 1 || c.Disabled {
+		return "", unavailableCredential("destination credential unavailable")
 	}
 	n := s.aead.NonceSize()
 	if len(c.Ciphertext) < n {
-		return "", problem(503, "destination credential unreadable")
+		return "", unavailableCredential("destination credential unreadable")
 	}
 	b, e := s.aead.Open(nil, c.Ciphertext[:n], c.Ciphertext[n:], []byte(id))
 	if e != nil {
-		return "", problem(503, "destination credential unreadable")
+		return "", unavailableCredential("destination credential unreadable")
 	}
 	return string(b), nil
 }
@@ -78,7 +92,7 @@ func (s *Service) SaveDestination(ctx context.Context, in DestinationInput) (Des
 			return old, e
 		}
 	}
-	if _, e = writeJSON(ctx, s.store, "destinations/"+d.ID+"/revisions/"+d.Revision+".json", d, ""); e != nil {
+	if _, e = writeJSON(ctx, s.store, "destination-revisions/"+d.ID+"/"+d.Revision+".json", d, ""); e != nil {
 		return old, e
 	}
 	_, e = writeJSON(ctx, s.store, "destinations/"+d.ID+".json", d, version)
@@ -103,22 +117,31 @@ func (s *Service) SetCredentialDisabled(ctx context.Context, id string, disabled
 	return e
 }
 func (s *Service) ListDestinations(ctx context.Context, cursor string) ([]Destination, string, error) {
-	p, e := s.store.List(ctx, "destinations/", cursor, 100)
-	if e != nil {
-		return nil, "", e
-	}
 	out := []Destination{}
-	for _, k := range p.Keys {
-		if strings.Count(strings.TrimPrefix(k, "destinations/"), "/") != 0 {
-			continue
-		}
-		d, _, e := readJSON[Destination](ctx, s.store, k)
+	for {
+		p, e := s.store.List(ctx, "destinations/", cursor, 100-len(out))
 		if e != nil {
 			return nil, "", e
 		}
-		out = append(out, d)
+		for _, k := range p.Keys {
+			// Older versions put revision objects inside this listing prefix.
+			if strings.Count(strings.TrimPrefix(k, "destinations/"), "/") != 0 {
+				continue
+			}
+			d, _, e := readJSON[Destination](ctx, s.store, k)
+			if e != nil {
+				return nil, "", e
+			}
+			out = append(out, d)
+		}
+		if p.Cursor == "" || len(out) >= 100 {
+			return out, p.Cursor, nil
+		}
+		if p.Cursor == cursor {
+			return nil, "", errors.New("storage pagination did not advance")
+		}
+		cursor = p.Cursor
 	}
-	return out, p.Cursor, nil
 }
 func newSecret() string {
 	b := make([]byte, 32)

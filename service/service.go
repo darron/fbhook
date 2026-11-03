@@ -106,24 +106,25 @@ type Event struct {
 	Reason string    `json:"reason,omitempty"`
 }
 type Submission struct {
-	Schema        int             `json:"schema"`
-	ID            string          `json:"id"`
-	EndpointID    string          `json:"endpoint_id"`
-	Feedback      fbhook.Feedback `json:"feedback"`
-	PayloadDigest string          `json:"payload_digest"`
-	Destination   Destination     `json:"destination"`
-	Issue         Issue           `json:"issue"`
-	State         string          `json:"state"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	NextAttempt   time.Time       `json:"next_attempt,omitempty"`
-	Attempts      int             `json:"attempts"`
-	TotalAttempts int             `json:"total_attempts"`
-	AttemptID     string          `json:"attempt_id,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	Reference     *IssueRef       `json:"reference,omitempty"`
-	History       []Event         `json:"history"`
-	TotalEvents   int             `json:"total_events"`
+	Schema            int             `json:"schema"`
+	ID                string          `json:"id"`
+	EndpointID        string          `json:"endpoint_id"`
+	Feedback          fbhook.Feedback `json:"feedback"`
+	PayloadDigest     string          `json:"payload_digest"`
+	Destination       Destination     `json:"destination"`
+	Issue             Issue           `json:"issue"`
+	State             string          `json:"state"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	NextAttempt       time.Time       `json:"next_attempt,omitempty"`
+	Attempts          int             `json:"attempts"`
+	TotalAttempts     int             `json:"total_attempts"`
+	ReconcileAttempts int             `json:"reconcile_attempts,omitempty"`
+	AttemptID         string          `json:"attempt_id,omitempty"`
+	Error             string          `json:"error,omitempty"`
+	Reference         *IssueRef       `json:"reference,omitempty"`
+	History           []Event         `json:"history"`
+	TotalEvents       int             `json:"total_events"`
 }
 type Options struct {
 	EncryptionKey              []byte

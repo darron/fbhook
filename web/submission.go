@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/darron/fbhook/service"
 	"strings"
+	"time"
 )
 
 // The JSON text is rendered as text in the browser, avoiding JavaScript number
@@ -29,10 +30,33 @@ func viewSubmission(sub service.Submission) submissionView {
 	}{sub.Feedback.Source, context})
 	return submissionView{Submission: sub, ContextJSON: strings.TrimSuffix(body.String(), "\n")}
 }
-func viewSubmissions(items []service.Submission) []submissionView {
-	out := make([]submissionView, 0, len(items))
+
+type submissionSummary struct {
+	ID         string `json:"id"`
+	EndpointID string `json:"endpoint_id"`
+	Feedback   struct {
+		Title  string `json:"title"`
+		Source struct {
+			App string `json:"app"`
+		} `json:"source"`
+	} `json:"feedback"`
+	Destination struct {
+		Name string `json:"name"`
+	} `json:"destination"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func viewSubmissions(items []service.Submission) []submissionSummary {
+	out := make([]submissionSummary, 0, len(items))
 	for _, item := range items {
-		out = append(out, viewSubmission(item))
+		summary := submissionSummary{ID: item.ID, EndpointID: item.EndpointID, State: item.State, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+		summary.Feedback.Title = item.Feedback.Title
+		app := []rune(item.Feedback.Source.App)
+		summary.Feedback.Source.App = string(app[:min(len(app), 200)])
+		summary.Destination.Name = item.Destination.Name
+		out = append(out, summary)
 	}
 	return out
 }
