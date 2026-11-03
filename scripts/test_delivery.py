@@ -20,10 +20,30 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn('bin.install "fbhook"', formula)
         self.assertIn('license "MIT"', formula)
         self.assertIn('skip_clean "bin/fbhook"', formula)
+        self.assertIn('prefix.install "THIRD_PARTY_NOTICES.txt"', formula)
+        self.assertIn('assert_path_exists prefix/"THIRD_PARTY_NOTICES.txt"', formula)
         self.assertIn('fbhook #{version} sha=' + 'b' * 40 + ' clean', formula)
+        self.assertNotIn('  version "1.2.3"', formula)
         self.assertEqual(formula.count('sha256 "' + 'a' * 64 + '"'), 4)
         with self.assertRaises(ValueError):
             brew.formula('darron/fbhook', 'v1.2.3', {}, 'b' * 40)
+
+    def test_existing_formula_tag_accepts_legacy_or_complete_generated_urls(self):
+        hashes = {release.archive_name('v1.2.3', os_name, arch): 'a' * 64
+                  for os_name in ('darwin', 'linux') for arch in ('amd64', 'arm64')}
+        generated = brew.formula('darron/fbhook', 'v1.2.3', hashes, 'b' * 40)
+        self.assertEqual(brew.existing_formula_tag(generated), 'v1.2.3')
+        self.assertEqual(brew.existing_formula_tag('class Fbhook < Formula\n  version "1.2.3"\nend\n'), 'v1.2.3')
+
+    def test_existing_formula_tag_rejects_indeterminate_or_mixed_versions(self):
+        hashes = {release.archive_name('v1.2.3', os_name, arch): 'a' * 64
+                  for os_name in ('darwin', 'linux') for arch in ('amd64', 'arm64')}
+        generated = brew.formula('darron/fbhook', 'v1.2.3', hashes, 'b' * 40)
+        malformed = generated.replace('fbhook_1.2.3_linux_arm64.tar.gz', 'fbhook_1.2.4_linux_arm64.tar.gz')
+        for text in ('class Fbhook < Formula\nend\n', malformed,
+                     generated + '  version "1.2.4"\n'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                brew.existing_formula_tag(text)
 
     def test_update_refuses_downgrade_from_generated_formula_without_writing(self):
         with tempfile.TemporaryDirectory() as temp:

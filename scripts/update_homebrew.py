@@ -10,13 +10,44 @@ import tempfile
 from pathlib import Path
 import release_artifacts as release
 
+VERSION = re.compile(r'^  version "(\d+\.\d+\.\d+)"$', re.MULTILINE)
+RELEASE_URL = re.compile(
+    r'^      url "https://github\.com/[^/]+/[^/]+/releases/download/'
+    r'(v\d+\.\d+\.\d+)/fbhook_(\d+\.\d+\.\d+)_(darwin|linux)_(amd64|arm64)\.tar\.gz"$',
+    re.MULTILINE)
+
+
+def existing_formula_tag(text):
+    """Return one safe stable version from legacy metadata or all release URLs."""
+    versions = VERSION.findall(text)
+    urls = RELEASE_URL.findall(text)
+    if urls:
+        if any(tag[1:] != filename_version for tag, filename_version, _, _ in urls):
+            raise ValueError('formula release URL version does not match filename')
+        tags = {tag for tag, filename_version, _, _ in urls if tag[1:] == filename_version}
+        platforms = {(os_name, arch) for _, _, os_name, arch in urls}
+        if (len(urls) != 4 or len(tags) != 1
+                or platforms != {('darwin', 'amd64'), ('darwin', 'arm64'),
+                                 ('linux', 'amd64'), ('linux', 'arm64')}):
+            raise ValueError('unrecognized release formula version')
+        tag = tags.pop()
+        release.validate_metadata(tag, '0' * 40)
+        if versions != [] and versions != [tag[1:]]:
+            raise ValueError('formula has mixed versions')
+        return tag
+    if len(versions) != 1:
+        raise ValueError('formula has no unambiguous version')
+    tag = 'v' + versions[0]
+    release.validate_metadata(tag, '0' * 40)
+    return tag
+
 
 def formula(repo, tag, hashes, revision):
     release.validate_metadata(tag, revision)
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise ValueError('invalid repository')
     lines = ['class Fbhook < Formula', '  desc "Shared feedback intake and issue delivery"',
-             f'  homepage "https://github.com/{repo}"', f'  version "{tag[1:]}"', '  license "MIT"']
+             f'  homepage "https://github.com/{repo}"', '  license "MIT"']
     for platform, ruby_platform in (('darwin', 'macos'), ('linux', 'linux')):
         lines.append(f'  on_{ruby_platform} do')
         for arch, ruby_arch in (('arm64', 'arm'), ('amd64', 'intel')):
@@ -29,9 +60,11 @@ def formula(repo, tag, hashes, revision):
                           f'      sha256 "{digest}"', '    end'])
         lines.append('  end')
     lines.extend(['', '  # Preserve the exact executable published on GitHub.',
-                  '  skip_clean "bin/fbhook"', '', '  def install', '    bin.install "fbhook"', '  end', '  test do',
+                  '  skip_clean "bin/fbhook"', '', '  def install', '    bin.install "fbhook"',
+                  '    prefix.install "THIRD_PARTY_NOTICES.txt"', '  end', '  test do',
                   f'    assert_equal "fbhook #{{version}} sha={revision} clean\\n", shell_output("#{{bin}}/fbhook version")',
                   '    assert_match "shared feedback", shell_output("#{bin}/fbhook help")',
+                  '    assert_path_exists prefix/"THIRD_PARTY_NOTICES.txt"',
                   '  end', 'end', ''])
     return '\n'.join(lines)
 
@@ -67,8 +100,8 @@ def update(repo, tag, tap):
         if text == content:
             print('Homebrew formula already identical.')
             return
-        previous = re.search(r'^  version "(\d+)\.(\d+)\.(\d+)"$', text, re.MULTILINE)
-        if previous and tuple(map(int, previous.groups())) > tuple(map(int, tag[1:].split('.'))):
+        previous = existing_formula_tag(text)
+        if tuple(map(int, previous[1:].split('.'))) > tuple(map(int, tag[1:].split('.'))):
             raise ValueError('refusing to downgrade the existing formula')
         sha = current['sha']
     elif '404' not in result.stderr:
