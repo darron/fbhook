@@ -1,0 +1,60 @@
+name: Client packages
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: clients-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  clients:
+    name: Clients (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: minimum runtimes
+            ruby: '3.3'
+            rust: '1.85.0'
+            node: '22'
+          - name: current runtimes
+            ruby: '4.0'
+            rust: '1.99.1'
+            node: '26.13.0'
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: 1.27.3
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 26.13.0
+      - name: Build embedded test assets
+        run: make ui
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: Install Ruby test dependency
+        run: ruby -S gem install minitest --version 5.27.0 --no-document
+      - name: Install Rust toolchain
+        env:
+          CLIENT_RUST_VERSION: ${{ matrix.rust }}
+        run: |
+          rustup toolchain install "$CLIENT_RUST_VERSION" --profile minimal --component rustfmt --component clippy
+          rustup default "$CLIENT_RUST_VERSION"
+      - name: Test clients and replay examples against real Go intake
+        run: make clients
+      - name: Build native packages
+        run: |
+          (cd clients/ruby && ruby -S gem build fbhook.gemspec)
+          cargo package --manifest-path clients/rust/Cargo.toml --locked --allow-dirty
+          (cd clients/typescript && npm pack)

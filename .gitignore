@@ -11,3 +11,9 @@ web/ui/dist/*
 __pycache__/
 *.pyc
 /artifacts/
+
+# Native client package build outputs
+/clients/rust/target/
+/clients/typescript/dist/
+*.gem
+*.tgz

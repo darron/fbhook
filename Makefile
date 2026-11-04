@@ -1,4 +1,4 @@
-.PHONY: ui build build-example test race vet lint check fuzz vuln browser scripts
+.PHONY: ui build build-example test race vet lint check fuzz vuln browser scripts clients clients-ruby clients-rust clients-typescript client-examples
 
 BUILD_REVISION ?=
 BUILD_STATE ?= unknown
@@ -49,3 +49,23 @@ browser:
 
 check: ui test race vet lint scripts build-example
 	go build $(BUILD_FLAGS) -o bin/fbhook ./cmd/fbhook
+
+# Client packages are checked separately from building/deploying the Go service.
+clients: client-examples
+
+client-examples: clients-ruby clients-rust clients-typescript
+	FBHOOK_CLIENT_EXAMPLES=1 go test -run '^TestNativeClientExamples$$' -count=1 ./web
+
+clients-ruby:
+	cd clients/ruby && ruby -Ilib test/client_test.rb
+
+clients-rust:
+	cargo fmt --manifest-path clients/rust/Cargo.toml -- --check
+	cargo clippy --manifest-path clients/rust/Cargo.toml --locked --all-targets -- -D warnings
+	cargo test --manifest-path clients/rust/Cargo.toml --locked
+	cargo build --manifest-path clients/rust/Cargo.toml --locked --example submit
+
+clients-typescript:
+	npm --prefix clients/typescript ci
+	npm --prefix clients/typescript test
+	npm --prefix clients/typescript run build

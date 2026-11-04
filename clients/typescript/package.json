@@ -1,0 +1,23 @@
+{
+  "name": "@darron/fbhook",
+  "version": "0.1.0",
+  "description": "Native Node.js client for the fbhook feedback intake API",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": { "node": ">=22" },
+  "files": ["dist", "examples", "LICENSE", "README.md", "package.json"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/darron/fbhook.git", "directory": "clients/typescript" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "devDependencies": { "typescript": "6.0.3" }
+}

@@ -40,9 +40,17 @@ in the admin for the delivery result. Reuse the same key and payload for retries
 
 Several apps can share an endpoint. Keep its URL out of browser code and logs.
 
-For Go, import `github.com/darron/fbhook` and use `NewClient`, `Prepare` and
-`Submit`. See the [runnable example](examples/submit/main.go) or
-[sending reference](docs/INTEGRATION.md).
+Use a native client from your backend:
+
+| Language | Client | Runnable example |
+| --- | --- | --- |
+| Go | `github.com/darron/fbhook` | [Submit](examples/submit/main.go) |
+| Ruby | [Ruby gem](clients/ruby/README.md) | [Submit](clients/ruby/examples/submit.rb) |
+| Rust | [Rust crate](clients/rust/README.md) | [Submit](clients/rust/examples/submit.rs) |
+| TypeScript / JavaScript | [npm package](clients/typescript/README.md) | [Submit](clients/typescript/examples/submit.mjs) |
+
+The new client packages can be built and used from this repository. See the
+[sending reference](docs/INTEGRATION.md) for the shared contract and retry rules.
 
 ## Build and run
 
@@ -61,7 +69,9 @@ bin/fbhook serve
 ```
 
 For development, install `golangci-lint` 2.15.0 and Python 3, then run `make check`.
-See [AGENTS.md](AGENTS.md) for code boundaries, checks and the PR workflow.
+Run `make ui clients` to check the Ruby, Rust and TypeScript packages, including
+local examples against the real intake API.
+See [AGENTS.md](AGENTS.md) for code boundaries, tool requirements and the PR workflow.
 
 ## Find the right doc
 
