@@ -1,5 +1,5 @@
 use fbhook::{Client, Error, Feedback, Receipt, Source, prepare};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
     net::TcpListener,
@@ -226,6 +226,43 @@ async fn max_three_and_no_retry_bad_responses() {
     }
 }
 #[tokio::test]
+async fn truncated_nonacceptance_preserves_status() {
+    let bad = Reply {
+        status: 409,
+        body: vec![],
+        length: Some(1),
+        location: None,
+    };
+    let (u, r) = server(vec![bad]);
+    assert_eq!(
+        Client::new(&u)
+            .unwrap()
+            .submit(&fb(), Some("k"))
+            .await
+            .unwrap_err()
+            .status(),
+        Some(409)
+    );
+    assert_eq!(r.lock().unwrap().len(), 1);
+    let bad = Reply {
+        status: 503,
+        body: vec![],
+        length: Some(1),
+        location: None,
+    };
+    let (u, r) = server(vec![bad; 3]);
+    assert_eq!(
+        Client::new(&u)
+            .unwrap()
+            .submit(&fb(), Some("k"))
+            .await
+            .unwrap_err()
+            .status(),
+        Some(503)
+    );
+    assert_eq!(r.lock().unwrap().len(), 3);
+}
+#[tokio::test]
 async fn bounds_and_cancels() {
     let (u, r) = server(vec![Reply {
         status: 202,
@@ -273,5 +310,8 @@ fn validation_and_prepare() {
     assert_eq!(s.version, "");
     let a = Feedback::new("a").with_context(json!({"x":1}));
     let b: Feedback = serde_json::from_str(r#"{"feedback":"b","context":null}"#).unwrap();
-    assert_eq!(prepare(&a, &b).context, Some(json!({"x":1})))
+    assert_eq!(prepare(&a, &b).context, Some(Value::Null));
+    let source_only: Feedback = serde_json::from_str(r#"{"source":{"app":"b"}}"#).unwrap();
+    assert_eq!(prepare(&a, &source_only).feedback, "a");
+    assert_eq!(prepare(&a, &source_only).context, Some(json!({"x":1})))
 }

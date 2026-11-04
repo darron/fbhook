@@ -160,7 +160,15 @@ module Fbhook
           nil
         end
         if result
-          status, response_body, oversized = result
+          status, response_body, oversized, unreadable = result
+          if status == 202 && unreadable
+            transport_failed = true
+            if attempt == ATTEMPTS - 1
+              break
+            end
+            sleep((attempt + 1) * 0.1)
+            next
+          end
           if status == 202
             return receipt_from(response_body, oversized)
           end
@@ -252,7 +260,7 @@ module Fbhook
 
     def idempotency_key(key)
       key = SecureRandom.hex(24) if key.nil? || key == ""
-      valid_bytes = key.is_a?(String) && key.bytes.all? { |byte| byte.between?(33, 126) }
+      valid_bytes = key.is_a?(String) && key.bytes.all? { |byte| byte.between?(32, 126) }
       unless valid_bytes && key.bytesize <= 200
         raise ValidationError, "invalid idempotency key"
       end
@@ -270,9 +278,11 @@ module Fbhook
       http.max_retries = 0 if http.respond_to?(:max_retries=)
       response_body = +""
       response = nil
+      response_status = nil
       bytes_read = 0
       Timeout.timeout(@attempt_timeout) do
         response = http.request(request) do |res|
+          response_status = res.code.to_i
           res.read_body do |chunk|
             bytes_read += chunk.bytesize
             raise ResponseTooLarge.new(res.code.to_i) if response_body.bytesize + chunk.bytesize > MAX_RESPONSE_BYTES
@@ -283,9 +293,13 @@ module Fbhook
       end
       expected_length = response["content-length"]
       raise IOError, "incomplete response" if expected_length && bytes_read != expected_length.to_i
-      [response.code.to_i, response_body, false]
+      [response_status, response_body, false, false]
     rescue ResponseTooLarge => error
-      [error.status, "", true]
+      [error.status, "", true, false]
+    rescue StandardError
+      raise if response_status.nil?
+
+      [response_status, "", false, true]
     end
 
     class ResponseTooLarge < StandardError

@@ -81,6 +81,22 @@ class ClientContractTest < Minitest::Test
     end
   end
 
+  def test_retains_known_status_when_a_non_accepted_body_is_truncated
+    with_server do |server, requests|
+      server.on_request { |_request| [409, "partial", { "content-length" => "40" }] }
+      error = assert_raises(Fbhook::HTTPError) { Fbhook::Client.new(server.endpoint).submit({ feedback: "Known conflict" }, key: "conflict") }
+      assert_equal 409, error.status
+      assert_equal 1, requests.length
+    end
+
+    with_server do |server, requests|
+      server.on_request { |_request| [503, "partial", { "content-length" => "40" }] }
+      error = assert_raises(Fbhook::HTTPError) { Fbhook::Client.new(server.endpoint).submit({ feedback: "Known transient failure" }, key: "unavailable") }
+      assert_equal 503, error.status
+      assert_equal 3, requests.length
+    end
+  end
+
   def test_never_follows_redirects
     with_server do |server, requests|
       server.on_request { |_request| [302, "redirect", { "location" => server.endpoint }] }
@@ -135,6 +151,12 @@ class ClientContractTest < Minitest::Test
     end
     ["bad\rkey", "bad\x00key", "café"].each do |key|
       assert_raises(Fbhook::ValidationError) { client.submit({ feedback: "ok" }, key: key) }
+    end
+
+    with_server do |server, requests|
+      server.on_request { |_request| [202, '{"id":"space-key","status":"accepted"}'] }
+      Fbhook::Client.new(server.endpoint).submit({ feedback: "ok" }, key: "event 123")
+      assert_equal "event 123", requests.fetch(0).fetch("idempotency-key")
     end
   end
 

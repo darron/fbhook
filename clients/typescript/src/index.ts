@@ -66,27 +66,46 @@ function validateEndpoint(input: string): string {
   return url.href;
 }
 
-function serialize(feedback: Feedback): Uint8Array {
-  if (typeof feedback.feedback !== 'string' || feedback.feedback.trim() === '') throw new Error('feedback is required');
-  if (feedback.title !== undefined && (typeof feedback.title !== 'string' || /\r|\n/.test(feedback.title) || Array.from(feedback.title).length > 200)) throw new Error('title must be one line of at most 200 characters');
-  validateSource(feedback.source);
-  if (feedback.context !== undefined) validateContext(feedback.context);
+function serialize(input: unknown): Uint8Array {
+  let feedback: unknown;
+  let title: unknown;
+  let sourceInput: unknown;
+  let context: unknown;
+  try {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new Error();
+    const candidate = input as Record<string, unknown>;
+    feedback = candidate.feedback;
+    title = candidate.title;
+    sourceInput = candidate.source;
+    context = candidate.context;
+  } catch { throw new Error('invalid feedback envelope'); }
+  if (typeof feedback !== 'string' || feedback.trim() === '') throw new Error('feedback is required');
+  if (title !== undefined && (typeof title !== 'string' || /\r|\n/.test(title) || Array.from(title).length > 200)) throw new Error('title must be one line of at most 200 characters');
+  const source = canonicalSource(sourceInput);
+  if (context !== undefined) validateContext(context);
+  const envelope: { feedback: string; title?: string; source?: Source; context?: unknown } = { feedback };
+  if (title !== undefined) envelope.title = title;
+  if (source !== undefined) envelope.source = source;
+  if (context !== undefined) envelope.context = context;
   let json: string | undefined;
-  try { json = JSON.stringify(feedback); } catch { throw new Error('context is not valid JSON'); }
+  try { json = JSON.stringify(envelope); } catch { throw new Error('context is not valid JSON'); }
   if (json === undefined) throw new Error('context is not valid JSON');
   const bytes = encoder.encode(json);
   if (bytes.byteLength > MAX_REQUEST_BYTES) throw new Error('feedback exceeds limit or is not UTF-8');
   return bytes;
 }
 
-function validateSource(source: unknown): void {
+function canonicalSource(source: unknown): Source | undefined {
   try {
-    if (source === undefined) return;
+    if (source === undefined) return undefined;
     if (source === null || typeof source !== 'object' || Array.isArray(source)) throw new Error();
-    for (const key of ['app', 'version', 'environment', 'actor']) {
+    const canonical: Source = {};
+    for (const key of ['app', 'version', 'environment', 'actor'] as const) {
       const value = (source as Record<string, unknown>)[key];
       if (value !== undefined && typeof value !== 'string') throw new Error();
+      if (value !== undefined) canonical[key] = value;
     }
+    return canonical;
   } catch { throw new Error('source must contain strings'); }
 }
 

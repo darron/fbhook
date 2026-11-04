@@ -161,3 +161,26 @@ test('prepare overlays nonempty fields and clones replacement context', () => {
 test('prepare redacts cloning failures from invalid contexts', () => {
   assert.throws(() => prepare({ feedback: 'default' }, { context: () => 'private caller code' }), /context is not valid JSON/);
 });
+
+test('submit serializes only canonical top-level envelope fields', async (t) => {
+  const local = await server(async (request, response) => {
+    const body = JSON.parse((await read(request)).toString());
+    assert.deepEqual(body, { feedback: 'original', source: { app: 'archive' } });
+    response.writeHead(202); response.end('{"id":"canonical","status":"accepted"}');
+  });
+  t.after(local.close);
+  const feedback = { feedback: 'original', source: { app: 'archive', ignored: 'discard me' }, ignored: 'discard me', toJSON: () => ({ feedback: 'replaced' }) };
+  await new Client(local.endpoint).submit(feedback);
+});
+
+test('submit does not invoke source toJSON while making its canonical copy', async (t) => {
+  let toJSONCalls = 0;
+  const local = await server(async (request, response) => {
+    assert.deepEqual(JSON.parse((await read(request)).toString()), { feedback: 'original', source: { app: 'archive' } });
+    response.writeHead(202); response.end('{"id":"source-canonical","status":"accepted"}');
+  });
+  t.after(local.close);
+  const source = { app: 'archive', toJSON: () => { toJSONCalls++; return { app: 'replaced' }; } };
+  await new Client(local.endpoint).submit({ feedback: 'original', source });
+  assert.equal(toJSONCalls, 0);
+});

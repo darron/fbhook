@@ -56,11 +56,23 @@ impl Source {
 pub struct Feedback {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
+    #[serde(default)]
     pub feedback: String,
     #[serde(default, skip_serializing_if = "source_is_empty")]
     pub source: Source,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_context",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub context: Option<Value>,
+}
+
+fn deserialize_context<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 impl Feedback {
@@ -253,7 +265,8 @@ impl Client {
                 Ok(response) => {
                     let status = response.status().as_u16();
                     match read_limited(response).await {
-                        Err(error) => (error, true),
+                        Err(error) if status == 202 => (error, true),
+                        Err(_) => (Error::HttpStatus(status), status == 429 || status >= 500),
                         Ok((bytes, oversized)) if status == 202 => {
                             if oversized {
                                 return Err(Error::InvalidReceipt);
@@ -295,7 +308,13 @@ async fn read_limited(mut response: reqwest::Response) -> Result<(Vec<u8>, bool)
 fn generated_key() -> Result<String, Error> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| Error::RandomUnavailable)?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut key = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        key.push(HEX[(byte >> 4) as usize] as char);
+        key.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(key)
 }
 
 /// Overlays nonempty submission fields on defaults. Context replaces defaults and
