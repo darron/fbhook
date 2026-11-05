@@ -43,6 +43,7 @@ failure, then run the relevant checks. Use the existing Make targets:
 | Change | Check |
 | --- | --- |
 | Code or dependency change | `make check` (UI, Go tests/races/vet/lint, script tests, builds) |
+| Native client package | Also `make clients` (package tests and local intake examples) |
 | UI or admin workflow | Also `make browser` |
 | Parser or security boundary | Also `make fuzz` and `make vuln` as applicable |
 | Documentation only | Check links, commands and claims; run `make scripts` if README/release docs change |
@@ -51,6 +52,12 @@ Tools: Go 1.26 minimum; CI Go 1.27.3, Node 26.13.0, golangci-lint 2.15.0,
 Python 3. Browser checks need Python `playwright==1.64.1` and Chromium.
 Run `make ui` before direct Go tests in a fresh checkout; Go embeds `web/ui/dist`.
 Never add a production authentication bypass for testing.
+
+Native client checks use Ruby 3.3+, Minitest 5.27.0, Rust 1.85+ and Node 22+.
+Run `ruby -S gem install minitest --version 5.27.0 --no-document` if needed. Client CI
+checks the minimum runtimes and Ruby 4.0, Rust 1.99.1 and Node 26.13.0.
+`make clients` needs the embedded UI built with `make ui` in a fresh checkout.
+The Go service build and deployment do not require Ruby or Rust.
 
 ## Reviews and GitHub
 

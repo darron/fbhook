@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Ruby, Rust and TypeScript client packages with safe intake retries, native package
+  metadata, runnable backend examples and dedicated CI checks.
+
 ### Fixed
 
 - Pass strict Homebrew audits while retaining protection against formula downgrades.

@@ -1,0 +1,24 @@
+[package]
+name = "fbhook"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Async Rust client for the fbhook feedback intake API"
+license = "MIT"
+repository = "https://github.com/darron/fbhook"
+homepage = "https://github.com/darron/fbhook"
+documentation = "https://docs.rs/fbhook"
+readme = "README.md"
+keywords = ["feedback", "webhook", "client"]
+categories = ["web-programming::http-client"]
+include = ["src/**", "examples/**", "Cargo.toml", "Cargo.lock", "LICENSE", "README.md"]
+
+[dependencies]
+getrandom = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
