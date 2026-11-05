@@ -42,6 +42,46 @@ with sync_playwright() as playwright:
     page.get_by_role('button', name='Validate & save').click()
     expect(page.get_by_role('heading', name='Browser destination')).to_be_visible()
     page.screenshot(path=str(artifacts / 'destinations-desktop.png'), full_page=True)
+    page.get_by_role('link', name='IP blocklist', exact=False).click()
+    page.wait_for_load_state('networkidle')
+    expect(page.get_by_role('heading', name='Block unwanted intake.')).to_be_visible()
+    page.get_by_label('Address or CIDR').fill('203.0.113.45')
+    page.get_by_label('Note (optional)').fill('Leaked URL traffic')
+    page.get_by_role('button', name='Add rule').click()
+    expect(page.get_by_text('203.0.113.45/32', exact=True)).to_be_visible()
+    page.get_by_label('Address or CIDR').fill('2001:db8::1')
+    page.get_by_role('button', name='Add rule').click()
+    expect(page.get_by_text('2001:db8::1/128', exact=True)).to_be_visible()
+    page.get_by_role('button', name='Remove 2001:db8::1/128').click()
+    page.screenshot(path=str(artifacts / 'ip-blocklist-desktop.png'), full_page=True)
+    page.get_by_role('button', name='Save changes').click()
+    page.reload()
+    page.wait_for_load_state('networkidle')
+    expect(page.get_by_text('203.0.113.45/32', exact=True)).to_be_visible()
+    csrf = json.loads(page.locator('#bootstrap').text_content())['csrfToken']
+    current = context.request.get(config['url'] + '/api/v1/admin/ip-blocklist').json()
+    external = context.request.post(
+        config['url'] + '/api/v1/admin/ip-blocklist',
+        headers={'X-CSRF-Token': csrf},
+        data={'rules': [
+            {'cidr': '203.0.113.45/32', 'note': 'Leaked URL traffic'},
+            {'cidr': '2001:db8::/32', 'note': 'Another verified range'},
+        ], 'version': current['version']},
+    )
+    assert external.status == 200, 'external blocklist update failed'
+    page.get_by_role('button', name='Remove 203.0.113.45/32').click()
+    page.get_by_role('button', name='Save changes').click()
+    expect(page.get_by_role('alert')).to_contain_text('Reload the latest version before saving')
+    expect(page.get_by_text('203.0.113.45/32', exact=True)).to_have_count(0)
+    page.get_by_role('button', name='Reload latest').click()
+    expect(page.get_by_text('2001:db8::/32', exact=True)).to_be_visible()
+    page.get_by_role('button', name='Remove 203.0.113.45/32').click()
+    page.get_by_role('button', name='Remove 2001:db8::/32').click()
+    page.get_by_role('button', name='Save changes').click()
+    expect(page.get_by_text('No blocked addresses yet.')).to_be_visible()
+    page.get_by_label('Address or CIDR').fill('not-an-address')
+    page.get_by_role('button', name='Add rule').click()
+    expect(page.get_by_role('alert')).to_contain_text('Enter a valid IPv4 or IPv6 address')
     page.get_by_role('link', name='Submissions', exact=False).click()
     page.wait_for_load_state('networkidle')
     expect(page.locator('.submission-row')).to_have_count(50)
@@ -53,6 +93,8 @@ with sync_playwright() as playwright:
     expect(page.locator('pre')).to_contain_text('<script>window.injected=true</script>')
     expect(page.locator('pre')).to_contain_text('9007199254740993')
     expect(page.locator('pre')).to_contain_text('1e10000')
+    expect(page.get_by_text('203.0.113.45', exact=True)).to_be_visible()
+    expect(page.get_by_role('link', name='Block IP ↗')).to_be_visible()
     assert page.evaluate('window.injected') is None, 'context executed as script'
     page.screenshot(path=str(artifacts / 'submission-detail.png'), full_page=True)
     page.keyboard.press('Escape')
@@ -64,6 +106,9 @@ with sync_playwright() as playwright:
     response = context.request.post(config['url'] + '/api/v1/admin/endpoints', data={})
     assert response.status == 403, 'missing CSRF was accepted'
     page.set_viewport_size({'width': 390, 'height': 844})
+    page.goto(config['url'] + '/admin/ip-blocklist')
+    page.wait_for_load_state('networkidle')
+    page.screenshot(path=str(artifacts / 'ip-blocklist-mobile.png'), full_page=True)
     page.goto(config['url'] + '/admin/endpoints')
     page.wait_for_load_state('networkidle')
     assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'mobile overflow'

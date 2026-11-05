@@ -4,6 +4,11 @@
 
 ### Added
 
+- Admin-managed IP/CIDR blocking for new feedback intake, with bucket-backed rules
+  and client IPs visible in submissions.
+- Google Cloud Storage adapter using native generation-based conditional writes
+  and Application Default Credentials.
+
 - Ruby, Rust and TypeScript client packages with safe intake retries, native package
   metadata, runnable backend examples and dedicated CI checks.
 

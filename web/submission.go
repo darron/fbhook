@@ -34,6 +34,7 @@ func viewSubmission(sub service.Submission) submissionView {
 type submissionSummary struct {
 	ID         string `json:"id"`
 	EndpointID string `json:"endpoint_id"`
+	ClientIP   string `json:"client_ip,omitempty"`
 	Feedback   struct {
 		Title  string `json:"title"`
 		Source struct {
@@ -51,7 +52,7 @@ type submissionSummary struct {
 func viewSubmissions(items []service.Submission) []submissionSummary {
 	out := make([]submissionSummary, 0, len(items))
 	for _, item := range items {
-		summary := submissionSummary{ID: item.ID, EndpointID: item.EndpointID, State: item.State, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+		summary := submissionSummary{ID: item.ID, EndpointID: item.EndpointID, ClientIP: item.ClientIP, State: item.State, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 		summary.Feedback.Title = item.Feedback.Title
 		app := []rune(item.Feedback.Source.App)
 		summary.Feedback.Source.App = string(app[:min(len(app), 200)])

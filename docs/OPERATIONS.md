@@ -4,7 +4,7 @@
 
 ## Set up the service
 
-1. Create a private Tigris bucket and dedicated read/write/list credentials.
+1. Create a private Tigris or Google Cloud Storage bucket and a dedicated service identity.
 2. Register a GitHub OAuth app. Use your HTTPS base URL as its homepage and
    `<base-url>/auth/callback` as its callback.
 3. Run `fbhook keygen`; save the encryption and session keys in your secret manager.
@@ -13,13 +13,35 @@
 
 ### Storage
 
+Both adapters use the same storage interface for configuration, credentials and
+submission state. Choose one backend for each installation:
+
 | Variable | Value |
 | --- | --- |
-| `BUCKET_NAME` | Dedicated bucket |
+| `FBHOOK_STORAGE_BACKEND` | `tigris` (default) or `gcs` |
+| `BUCKET_NAME` | Dedicated private bucket |
+| `FBHOOK_STORAGE_PREFIX` | Optional object prefix |
+
+For **Tigris**, also set:
+
+| Variable | Value |
+| --- | --- |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Dedicated Tigris credentials |
 | `AWS_ENDPOINT_URL_S3` | Default: `https://t3.storage.dev` |
 | `AWS_REGION` | Default: `auto` |
-| `FBHOOK_STORAGE_PREFIX` | Optional object prefix |
+
+For **GCS**, set `FBHOOK_STORAGE_BACKEND=gcs` and provide
+[Application Default Credentials](https://docs.cloud.google.com/docs/authentication/application-default-credentials).
+Use an attached service account or Workload Identity Federation in production;
+local development can use `gcloud auth application-default login`.
+`GOOGLE_APPLICATION_CREDENTIALS` can point to an externally managed credential
+configuration file. Keep that file outside Git and the bucket.
+
+Grant the service identity bucket-scoped
+[Storage Object User](https://docs.cloud.google.com/storage/docs/access-control/iam-roles)
+access, or equivalent object read, list and conditional overwrite permissions.
+GCS does not use the AWS variables. Changing the backend does not move existing
+objects: migrate the whole prefix and retain the encryption key before switching.
 
 ### Service and sign-in
 
@@ -53,6 +75,67 @@ destination. GitHub sign-in does not grant issue-writing permission.
 Save replacement tracker credentials by editing the destination. Queued work uses
 the current credential but keeps its captured target, labels and rendered issue.
 Pausing an endpoint stops intake; accepted submissions still deliver.
+
+## Block unwanted feedback
+
+**Open IP blocklist in the admin to block a submitting machine.** Rules apply to
+new feedback intake across all endpoints. Login, admin and health checks remain
+accessible.
+
+1. Open a submission to find its **Client IP**. Older records may not have one.
+2. Add the address or an IPv4/IPv6 CIDR range in **IP blocklist**; optionally add a note.
+3. Save the rules. Matching requests return `403` before their bodies are read or
+   submissions are accepted.
+4. Remove the rule and save to allow that address again.
+
+The address identifies the machine submitting to fbhook. For a backend client,
+that is your application server, not the person using its form. Addresses never
+appear in generated issue content. Blocking does not delete issues or cancel
+already accepted feedback. Rotate the endpoint URL to revoke a leaked credential
+for every address.
+
+### Persist or upload rules
+
+The selected bucket stores `<prefix>/config/ip-blocklist.json`. Admin saves use
+conditional writes; if another edit wins, reload the latest rules before saving.
+You can also upload this JSON with your storage tools, using a conditional write
+to avoid overwriting a newer version:
+
+```json
+{
+  "schema": 1,
+  "rules": [
+    {"cidr": "203.0.113.42/32", "note": "Unwanted submissions"},
+    {"cidr": "2001:db8:1234::/48", "note": "Blocked network"}
+  ]
+}
+```
+
+The example addresses are documentation ranges; replace them with the actual
+source. The saved configuration is limited to 64 KiB and 1,024 rules; notes
+can contain at most 200 characters. Upload an empty `rules` array to clear the list. Admin saves take effect immediately; external uploads are read within five
+seconds on the next intake request. If the stored policy is malformed or cannot
+be read, intake returns `503` until it can load valid rules.
+
+### Identify clients behind a proxy
+
+Direct deployments use the socket peer IP and ignore forwarded headers. Behind
+an HTTP proxy, configure both variables explicitly:
+
+| Variable | Value |
+| --- | --- |
+| `FBHOOK_TRUSTED_PROXY_CIDRS` | Comma-separated networks of the actual connecting proxy peers |
+| `FBHOOK_CLIENT_IP_HEADER` | `Fly-Client-IP` or `X-Forwarded-For` |
+
+For Fly, use `Fly-Client-IP` with trusted peer ranges appropriate to your network.
+Verify the proxy peer addresses and restrict direct access before enabling trust;
+do not trust a header merely because it exists. See
+[Fly request headers](https://docs.fly.io/networking/request-headers).
+A proxy in front of Fly requires its own verified trust chain.
+For `X-Forwarded-For`, fbhook walks from the nearest hop toward the client,
+stopping at the first address outside the trusted proxy networks.
+Malformed trusted headers fail intake closed. Untrusted peers cannot choose an
+address by sending these headers.
 
 ## Recover a delivery
 
@@ -137,7 +220,13 @@ With test-bucket credentials injected, run:
 FBHOOK_TEST_TIGRIS=1 go test -run TestLiveContract -count=1 -v ./storage/tigris
 ```
 
-This writes and retains objects under a random `fbhook-contract/<timestamp>/`
+For GCS, inject test-bucket ADC and use:
+
+```sh
+FBHOOK_TEST_GCS=1 go test -run TestLiveContract -count=1 -v ./storage/gcs
+```
+
+Each command writes and retains objects under a random `fbhook-contract/<timestamp>/`
 prefix. The test prints that prefix; remove it later with your storage tools.
 
 ## Publish a release

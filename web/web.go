@@ -13,6 +13,7 @@ import (
 	"golang.org/x/oauth2/github"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -24,6 +25,8 @@ type Options struct {
 	BaseURL, OAuthClientID, OAuthClientSecret string
 	AllowedUsers                              []string
 	SessionKey                                []byte
+	TrustedProxyCIDRs                         []string
+	ClientIPHeader                            string
 	HTTPClient                                *http.Client
 	OAuthEndpoint                             oauth2.Endpoint
 	GitHubAPI                                 string
@@ -47,6 +50,7 @@ type Server struct {
 	readyMu      sync.Mutex
 	readyChecked time.Time
 	readyError   error
+	trustedProxy []netip.Prefix
 }
 
 func New(s *service.Service, o Options) (*Server, error) {
@@ -61,6 +65,16 @@ func New(s *service.Service, o Options) (*Server, error) {
 	}
 	if s == nil || o.OAuthClientID == "" || o.OAuthClientSecret == "" || len(o.SessionKey) != 64 || len(o.AllowedUsers) == 0 {
 		return nil, errors.New("service, OAuth credentials, authorized users and 64-byte session key required")
+	}
+	trustedProxy, e := parseTrustedProxyCIDRs(o.TrustedProxyCIDRs)
+	if e != nil {
+		return nil, e
+	}
+	if o.ClientIPHeader != "" && o.ClientIPHeader != "Fly-Client-IP" && o.ClientIPHeader != "X-Forwarded-For" {
+		return nil, errors.New("client IP header must be Fly-Client-IP or X-Forwarded-For")
+	}
+	if (o.ClientIPHeader == "") != (len(trustedProxy) == 0) {
+		return nil, errors.New("client IP header and trusted proxy CIDRs must be configured together")
 	}
 	allowed := []string{}
 	for _, login := range o.AllowedUsers {
@@ -84,7 +98,7 @@ func New(s *service.Service, o Options) (*Server, error) {
 	codec := securecookie.New(o.SessionKey[:32], o.SessionKey[32:])
 	codec.MaxAge(8 * 60 * 60)
 	codec.MaxLength(4096)
-	app := &Server{service: s, options: o, allowed: allowed, codec: codec, http: &hc, secure: u.Scheme == "https", mux: http.NewServeMux(), counts: map[string]int{}, authSlots: make(chan struct{}, 16), active: map[string]int{}}
+	app := &Server{service: s, options: o, allowed: allowed, codec: codec, http: &hc, secure: u.Scheme == "https", mux: http.NewServeMux(), counts: map[string]int{}, authSlots: make(chan struct{}, 16), active: map[string]int{}, trustedProxy: trustedProxy}
 	app.oauth = oauth2.Config{ClientID: o.OAuthClientID, ClientSecret: o.OAuthClientSecret, RedirectURL: strings.TrimRight(o.BaseURL, "/") + "/auth/callback", Scopes: []string{"read:user"}, Endpoint: o.OAuthEndpoint}
 	app.routes()
 	return app, nil
@@ -104,7 +118,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /auth/logout", s.admin(http.HandlerFunc(s.logout)))
 	s.mux.Handle("/api/v1/admin/", s.admin(http.HandlerFunc(s.adminAPI)))
 	s.mux.Handle("GET /assets/", s.admin(http.StripPrefix("/assets/", http.FileServerFS(frontendAssets()))))
-	for _, path := range []string{"GET /admin", "GET /admin/endpoints", "GET /admin/destinations", "GET /admin/submissions"} {
+	for _, path := range []string{"GET /admin", "GET /admin/endpoints", "GET /admin/destinations", "GET /admin/submissions", "GET /admin/ip-blocklist"} {
 		s.mux.Handle(path, s.admin(http.HandlerFunc(s.shell)))
 	}
 	s.mux.HandleFunc("GET /login.css", loginCSS)
@@ -147,11 +161,15 @@ func failure(w http.ResponseWriter, e error) {
 	respond(w, service.ErrorStatus(e), map[string]string{"error": message})
 }
 func decode(w http.ResponseWriter, r *http.Request, out any) bool {
+	return decodeLimit(w, r, out, fbhook.MaxRequestBytes)
+}
+
+func decodeLimit(w http.ResponseWriter, r *http.Request, out any, limit int64) bool {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		respond(w, 415, map[string]string{"error": "application/json required"})
 		return false
 	}
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, fbhook.MaxRequestBytes))
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	d.DisallowUnknownFields()
 	if d.Decode(out) != nil {
 		respond(w, 400, map[string]string{"error": "invalid JSON request"})
@@ -168,14 +186,14 @@ func (s *Server) intake(w http.ResponseWriter, r *http.Request) {
 		respond(w, 415, map[string]string{"error": "application/json required"})
 		return
 	}
-	credential := r.PathValue("credential")
-	id, secret, ok := strings.Cut(credential, ".")
-	if !ok || !service.ValidID(id) || len(secret) != 43 {
-		respond(w, 404, map[string]string{"error": "feedback endpoint unavailable"})
+	clientIP, e := s.clientIP(r)
+	if e != nil {
+		respond(w, 503, map[string]string{"error": "feedback intake unavailable"})
 		return
 	}
-	// This gate covers only authentication's storage read, never a body read
-	// controlled by an unauthenticated client. No forwarded headers are trusted.
+	// Bound policy refresh and endpoint authentication together. Neither phase
+	// reads a caller-controlled body. Forwarded addresses are used only after
+	// the socket peer matches an explicitly configured trusted proxy CIDR.
 	select {
 	case s.authSlots <- struct{}{}:
 	default:
@@ -191,6 +209,21 @@ func (s *Server) intake(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	defer releaseAuth()
+	blocked, e := s.service.IPBlocked(r.Context(), clientIP)
+	if e != nil {
+		respond(w, 503, map[string]string{"error": "feedback intake unavailable"})
+		return
+	}
+	if blocked {
+		respond(w, 403, map[string]string{"error": "feedback request forbidden"})
+		return
+	}
+	credential := r.PathValue("credential")
+	id, secret, ok := strings.Cut(credential, ".")
+	if !ok || !service.ValidID(id) || len(secret) != 43 {
+		respond(w, 404, map[string]string{"error": "feedback endpoint unavailable"})
+		return
+	}
 	admittedID := ""
 	defer func() {
 		if admittedID != "" {
@@ -212,7 +245,7 @@ func (s *Server) intake(w http.ResponseWriter, r *http.Request) {
 		}
 		return body, nil
 	}
-	receipt, e := s.service.AcceptWithAdmission(r.Context(), credential, readBody, r.Header.Get("Idempotency-Key"), admit)
+	receipt, e := s.service.AcceptFrom(r.Context(), credential, clientIP, readBody, r.Header.Get("Idempotency-Key"), admit)
 	if e != nil {
 		if service.ErrorStatus(e) == 429 {
 			w.Header().Set("Retry-After", "60")

@@ -2,8 +2,8 @@
 
 **Turn application and agent feedback into GitHub or Linear issues.**
 
-Send feedback and JSON to a secret URL. fbhook saves the submission in Tigris,
-then a background worker creates the issue. Your application owns the feedback
+Send feedback and JSON to a secret URL. fbhook saves the submission in Tigris or
+Google Cloud Storage, then a background worker creates the issue. Your application owns the feedback
 form or agent tool; issue readers decide what happens next.
 
 ```text
@@ -39,6 +39,8 @@ fbhook send --app archive --actor agent \
 in the admin for the delivery result. Reuse the same key and payload for retries.
 
 Several apps can share an endpoint. Keep its URL out of browser code and logs.
+Use the admin [IP blocklist](docs/OPERATIONS.md#block-unwanted-feedback) to stop
+unwanted submissions from an address or network.
 
 Use a native client from your backend:
 

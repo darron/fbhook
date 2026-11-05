@@ -97,6 +97,7 @@ Without a key, another request can create another submission.
 | --- | --- |
 | `202` | Durably saved; receipt contains `id` and `status: accepted` |
 | `400`, `413`, `415` | Invalid envelope, too large, or wrong content type |
+| `403` | Submitting IP address is blocked; do not retry unchanged |
 | `404` | Endpoint credential unavailable, paused or revoked |
 | `409` | Key already used with different content |
 | `429` | Rate or concurrency limit; retry later |
@@ -104,7 +105,9 @@ Without a key, another request can create another submission.
 Intake permits 120 requests per endpoint and 600 globally per minute per process.
 Authenticated work is capped at four concurrent requests per endpoint and 16 total.
 Invalid credentials do not spend these quotas; authentication has its own limit.
-HTTPS is required outside loopback development.
+HTTPS is required outside loopback development. IP rules can reject intake before
+authentication or body reads; see [IP blocking](OPERATIONS.md#block-unwanted-feedback).
+A policy-loading failure returns `503` without accepting the submission.
 
 Pausing stops new intake. Rotation immediately revokes the old URL, including
 old-key retries. For uncertain delivery, use [recovery](OPERATIONS.md#recover-a-delivery)

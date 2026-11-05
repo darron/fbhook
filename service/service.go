@@ -12,6 +12,7 @@ import (
 	"errors"
 	"github.com/darron/fbhook"
 	"github.com/darron/fbhook/storage"
+	"net/netip"
 	"regexp"
 	"sync"
 	"time"
@@ -109,6 +110,7 @@ type Submission struct {
 	Schema            int             `json:"schema"`
 	ID                string          `json:"id"`
 	EndpointID        string          `json:"endpoint_id"`
+	ClientIP          string          `json:"client_ip,omitempty"`
 	Feedback          fbhook.Feedback `json:"feedback"`
 	PayloadDigest     string          `json:"payload_digest"`
 	Destination       Destination     `json:"destination"`
@@ -147,6 +149,11 @@ type Service struct {
 	store    storage.Store
 	options  Options
 	aead     cipher.AEAD
+	ipMu     sync.Mutex
+	ipRules  []netip.Prefix
+	ipLoaded bool
+	ipCheck  time.Time
+	ipErr    error
 	scanMu   sync.Mutex
 	statusMu sync.Mutex
 	status   WorkerStatus

@@ -39,6 +39,7 @@ scripts:
 FUZZ_TIME ?= 10s
 fuzz:
 	GOMAXPROCS=2 go test -run '^$$' -fuzz '^FuzzParse$$' -fuzztime=$(FUZZ_TIME) -parallel=2 .
+	GOMAXPROCS=2 go test -run '^$$' -fuzz '^FuzzParseIPPrefix$$' -fuzztime=$(FUZZ_TIME) -parallel=2 ./service
 
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
