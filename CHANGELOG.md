@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-05
 
 ### Added
 
@@ -8,7 +8,6 @@
   and client IPs visible in submissions.
 - Google Cloud Storage adapter using native generation-based conditional writes
   and Application Default Credentials.
-
 - Ruby, Rust and TypeScript client packages with safe intake retries, native package
   metadata, runnable backend examples and dedicated CI checks.
 
