@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/darron/fbhook"
 	"github.com/darron/fbhook/storage"
+	"net/netip"
 	"strings"
 )
 
@@ -19,9 +20,22 @@ func (s *Service) Accept(ctx context.Context, credential string, body []byte, ke
 // budget or reading the body. The admission callback receives an authenticated
 // endpoint ID, never caller input. Rejected requests never invoke readBody.
 func (s *Service) AcceptWithAdmission(ctx context.Context, credential string, readBody func() ([]byte, error), key string, admit func(string) bool) (fbhook.Receipt, error) {
+	return s.AcceptFrom(ctx, credential, netip.Addr{}, readBody, key, admit)
+}
+
+// AcceptFrom is AcceptWithAdmission with an already validated network peer.
+// The address is retained for administration only and does not affect payload
+// digests, idempotency, or the issue sent to the provider.
+func (s *Service) AcceptFrom(ctx context.Context, credential string, clientIP netip.Addr, readBody func() ([]byte, error), key string, admit func(string) bool) (fbhook.Receipt, error) {
 	var receipt fbhook.Receipt
 	if readBody == nil {
 		return receipt, problem(400, "feedback body reader required")
+	}
+	if clientIP.IsValid() {
+		if clientIP.Zone() != "" {
+			return receipt, problem(503, "client address unavailable")
+		}
+		clientIP = clientIP.Unmap()
 	}
 	ep, e := s.authenticate(ctx, credential)
 	if e != nil {
@@ -75,6 +89,9 @@ func (s *Service) AcceptWithAdmission(ctx context.Context, credential string, re
 	}
 	now := s.now()
 	sub := Submission{Schema: 1, ID: id, EndpointID: ep.ID, Feedback: f, PayloadDigest: payloadDigest, Destination: d, Issue: issue, State: "pending", CreatedAt: now, UpdatedAt: now, History: []Event{}}
+	if clientIP.IsValid() {
+		sub.ClientIP = clientIP.String()
+	}
 	_, e = writeJSON(ctx, s.store, path, sub, "")
 	if errors.Is(e, storage.ErrConflict) {
 		existing, _, readErr := readJSON[Submission](ctx, s.store, path)

@@ -9,7 +9,6 @@ import (
 	ghissues "github.com/darron/fbhook/issues/github"
 	"github.com/darron/fbhook/issues/linear"
 	"github.com/darron/fbhook/service"
-	"github.com/darron/fbhook/storage/tigris"
 	"github.com/darron/fbhook/web"
 	"io"
 	"log"
@@ -55,15 +54,16 @@ func serve(ctx context.Context, args []string, out, errOut io.Writer) error {
 			return errors.New("FBHOOK_POLL_INTERVAL must be between 1s and 1h")
 		}
 	}
-	store, e := tigris.New(ctx, tigris.FromEnv())
+	store, closeStore, e := storageFromEnv(ctx)
 	if e != nil {
 		return e
 	}
+	defer func() { _ = closeStore() }()
 	svc, e := service.New(store, service.Options{EncryptionKey: encryption, PollInterval: interval, Providers: map[string]service.Provider{"github": ghissues.New(nil, ""), "linear": linear.New(nil, "")}})
 	if e != nil {
 		return e
 	}
-	handler, e := web.New(svc, web.Options{BaseURL: strings.TrimRight(os.Getenv("FBHOOK_BASE_URL"), "/"), OAuthClientID: os.Getenv("GITHUB_CLIENT_ID"), OAuthClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"), AllowedUsers: strings.Split(os.Getenv("FBHOOK_GITHUB_USERS"), ","), SessionKey: session})
+	handler, e := web.New(svc, web.Options{BaseURL: strings.TrimRight(os.Getenv("FBHOOK_BASE_URL"), "/"), OAuthClientID: os.Getenv("GITHUB_CLIENT_ID"), OAuthClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"), AllowedUsers: strings.Split(os.Getenv("FBHOOK_GITHUB_USERS"), ","), SessionKey: session, TrustedProxyCIDRs: splitNonempty(os.Getenv("FBHOOK_TRUSTED_PROXY_CIDRS")), ClientIPHeader: os.Getenv("FBHOOK_CLIENT_IP_HEADER")})
 	if e != nil {
 		return e
 	}
@@ -98,4 +98,15 @@ func serve(ctx context.Context, args []string, out, errOut io.Writer) error {
 	}
 	<-workerDone
 	return shutdownErr
+}
+
+func splitNonempty(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
 }

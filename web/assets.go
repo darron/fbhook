@@ -49,6 +49,14 @@ func (s *Server) shell(w http.ResponseWriter, r *http.Request) {
 	b.Data["endpointCursor"] = nextEndpoints
 	b.Data["destinationCursor"] = nextDestinations
 	b.Data["status"] = s.service.Status()
+	if b.Page == "/ip-blocklist" {
+		config, version, err := s.service.GetIPBlocklist(r.Context())
+		if err != nil {
+			http.Error(w, "IP blocklist unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		b.Data["ipBlocklist"] = map[string]any{"config": config, "version": version}
+	}
 	if b.Page == "/submissions" {
 		items, cursor, err := s.service.ListSubmissions(r.Context(), "")
 		if err != nil {

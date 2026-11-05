@@ -40,6 +40,13 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 			respond(w, 200, map[string]any{"items": viewSubmissions(items), "cursor": next})
 		case "status":
 			respond(w, 200, s.service.Status())
+		case "ip-blocklist":
+			config, version, e := s.service.GetIPBlocklist(ctx)
+			if e != nil {
+				failure(w, e)
+				return
+			}
+			respond(w, 200, map[string]any{"config": config, "version": version})
 		default:
 			if len(parts) == 3 && parts[0] == "submissions" {
 				sub, _, e := s.service.GetSubmission(ctx, parts[1], parts[2])
@@ -60,6 +67,26 @@ func (s *Server) adminAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case path == "ip-blocklist":
+		var in struct {
+			Rules   []service.IPRule `json:"rules"`
+			Version string           `json:"version"`
+		}
+		if !decodeLimit(w, r, &in, 128*1024) {
+			return
+		}
+		if in.Rules == nil {
+			respond(w, 400, map[string]string{"error": "rules are required"})
+			return
+		}
+		user := requestIdentity(r)
+		actor := user.Login + " (" + user.ID + ")"
+		config, version, e := s.service.SaveIPBlocklist(ctx, in.Rules, in.Version, actor)
+		if e != nil {
+			failure(w, e)
+			return
+		}
+		respond(w, 200, map[string]any{"config": config, "version": version})
 	case path == "destinations":
 		var in service.DestinationInput
 		if !decode(w, r, &in) {
