@@ -1,35 +1,71 @@
-name: Update Homebrew
-on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Published stable release tag
-        type: string
-        required: true
+name: Update Homebrew after release
+
+"on":
   workflow_call:
     inputs:
       tag:
-        type: string
         required: true
+        type: string
     secrets:
       HOMEBREW_TAP_TOKEN:
         required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable vMAJOR.MINOR.PATCH tag
+        required: true
+        type: string
+
 permissions:
   contents: read
+
 concurrency:
-  group: homebrew-fbhook
+  group: fbhook-homebrew-release-dispatch
   cancel-in-progress: false
+  queue: max
+
 jobs:
-  update:
+  dispatch:
+    if: >-
+      (github.event_name == 'release' && !github.event.release.draft && !github.event.release.prerelease) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Verify published assets and update formula
+      - name: Validate published stable release
+        id: release
         env:
+          REQUESTED_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag }}
-          RELEASE_REPO: ${{ github.repository }}
-        run: python3 scripts/update_homebrew.py --repo "$RELEASE_REPO" --tag "$RELEASE_TAG"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re
+          tag = os.environ["REQUESTED_TAG"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("release must be a stable vMAJOR.MINOR.PATCH tag")
+          PY
+          gh release view "${REQUESTED_TAG}" --repo "${GITHUB_REPOSITORY}" --json tagName,isDraft,isPrerelease > release.json
+          python3 - <<'PY'
+          import json, os
+          with open("release.json", encoding="utf-8") as source:
+              release = json.load(source)
+          if release["tagName"] != os.environ["REQUESTED_TAG"] or release["isDraft"] or release["isPrerelease"]:
+              raise SystemExit("release must be published and stable")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f'tag={os.environ["REQUESTED_TAG"]}\n')
+          PY
+      - name: Trigger the tap's validation and publishing workflow
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::Add HOMEBREW_TAP_TOKEN to this repository: a fine-grained token for darron/homebrew-tap with Actions read and write."
+            exit 1
+          fi
+          python3 - <<'PY' | gh api --method POST repos/darron/homebrew-tap/actions/workflows/update-fbhook.yml/dispatches --input -
+          import json, os
+          print(json.dumps({"ref": "main", "inputs": {"tag": os.environ["RELEASE_TAG"]}}))
+          PY
+          echo "Triggered fbhook validation in darron/homebrew-tap."

@@ -8,6 +8,10 @@ on:
         description: Existing published stable release tag
         type: string
         required: true
+      update_homebrew:
+        description: Update Homebrew after a manual publication
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -109,7 +113,7 @@ jobs:
         run: python3 scripts/release_artifacts.py publish --output release-assets --tag "$RELEASE_TAG" --revision "$RELEASE_REVISION" --repo "$RELEASE_REPO"
   homebrew:
     needs: [build, publish]
-    if: vars.HOMEBREW_TAP_ENABLED == 'true'
+    if: github.event_name == 'release' || inputs.update_homebrew
     uses: ./.github/workflows/update-homebrew.yml
     with:
       tag: ${{ needs.build.outputs.tag }}
