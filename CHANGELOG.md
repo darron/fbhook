@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Automatic Homebrew publishing through the tap's separate validation and
+  publishing jobs after stable binary releases.
+
 ## 0.2.0 — 2026-11-05
 
 ### Added

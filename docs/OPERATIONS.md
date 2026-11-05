@@ -237,18 +237,29 @@ prefix. The test prints that prefix; remove it later with your storage tools.
 4. Verify `SHA256SUMS`, version metadata and native execution before reporting success.
 5. Check the Homebrew update separately if using the tap.
 
-Assets are immutable: an existing asset must be byte-identical. **Update Homebrew**
-verifies published hashes and requires `HOMEBREW_TAP_TOKEN` with Contents read/write
-on your tap. Set the repository variable `HOMEBREW_TAP_ENABLED=true` to enable
-automatic updates after release publication; leave it unset while preparing a
-private release. **Update Homebrew** can also be run independently.
+Assets are immutable: an existing asset must be byte-identical. After publication,
+**Update Homebrew after release** dispatches [the tap's validation workflow](https://github.com/darron/homebrew-tap/blob/main/.github/workflows/update-fbhook.yml).
+The tap checks every archive, installs and tests the native binary, then publishes
+only the validated formula from a separate runner.
 
-For a host-authenticated manual update, run:
+### Enable automatic tap updates
+
+1. Create a fine-grained GitHub token scoped to `darron/homebrew-tap`, with
+   **Actions: read and write**.
+2. Add it as the `HOMEBREW_TAP_TOKEN` secret in `darron/fbhook`.
+3. Publish a stable release. The tap update starts after binary publication.
+
+Manual **Release binaries** runs update the tap only when `update_homebrew` is
+selected. To retry a published release directly in the tap with your host login:
 
 ```sh
-env -u GH_TOKEN -u GITHUB_TOKEN python3 scripts/update_homebrew.py \
-  --repo OWNER/REPOSITORY --tag vMAJOR.MINOR.PATCH --tap OWNER/homebrew-tap
+env -u GH_TOKEN -u GITHUB_TOKEN gh workflow run update-fbhook.yml \
+  --repo darron/homebrew-tap --ref main -f tag=vMAJOR.MINOR.PATCH
 ```
+
+The tap refuses downgrades, changed metadata for an existing tag, and manual
+formula edits. Check both the source release workflow and the tap workflow before
+reporting the update complete.
 
 Release archives include the MIT license and bundled dependency notices. Python
 is used by release automation and browser checks; the installed binary and
